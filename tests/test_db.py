@@ -62,7 +62,8 @@ class TestDatabaseManager(unittest.TestCase):
         all_emails = self.db.get_all_emails()
         self.assertEqual(len(all_emails), 2)
 
-        # Check stats
+        # Check count and stats
+        self.assertEqual(self.db.get_total_email_count(), 2)
         stats = self.db.get_stats()
         self.assertEqual(stats["total_emails"], 2)
         self.assertEqual(stats["total_files"], 1)

@@ -330,6 +330,17 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def get_total_email_count(self) -> int:
+        """Returns the total number of indexed emails in the database."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) as cnt FROM emails")
+            row = cursor.fetchone()
+            return row["cnt"] if row else 0
+        finally:
+            conn.close()
+
     def get_stats(self) -> Dict[str, Any]:
         """Returns database statistics."""
         conn = self.get_connection()

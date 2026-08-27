@@ -6,6 +6,7 @@ redirection to Microsoft Outlook or system default email clients.
 
 import os
 import sys
+import time
 import threading
 import queue
 import logging
@@ -253,14 +254,17 @@ class FastPSTApp:
         self.save_as_btn.pack(side=tk.LEFT)
 
     def _build_status_bar(self):
-        """Bottom status bar with progress bar."""
-        status_frame = ttk.Frame(self.root, padding="4 2 4 2", relief="sunken")
+        """Bottom status bar with determinate progress bar and details."""
+        status_frame = ttk.Frame(self.root, padding="4 4 4 4", relief="sunken")
         status_frame.pack(fill=tk.X, side=tk.BOTTOM)
 
         self.status_label = ttk.Label(status_frame, text="Ready", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 9))
-        self.status_label.pack(side=tk.LEFT, padx=4)
+        self.status_label.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
 
-        self.progress_bar = ttk.Progressbar(status_frame, mode="indeterminate", length=180)
+        self.progress_percent_label = ttk.Label(status_frame, text="", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 9, "bold"))
+        self.progress_percent_label.pack(side=tk.RIGHT, padx=(4, 8))
+
+        self.progress_bar = ttk.Progressbar(status_frame, mode="determinate", maximum=100, length=220)
         self.progress_bar.pack(side=tk.RIGHT, padx=4)
 
     # --- Data & Event Handling ---
@@ -439,8 +443,9 @@ class FastPSTApp:
             return
 
         self.is_indexing = True
-        self.progress_bar.start(10)
-        self.status_label.config(text="Scanning folder for PST and OST files...")
+        self.progress_bar["value"] = 0
+        self.progress_percent_label.config(text="0%")
+        self.status_label.config(text="Scanning folder for mail data files...")
 
         thread = threading.Thread(
             target=self._scan_and_index_worker,
@@ -451,25 +456,31 @@ class FastPSTApp:
 
     def _scan_and_index_worker(self, folder: str, force_reindex: bool):
         """Worker thread executing discovery and parsing."""
+        start_time = time.time()
         try:
             discovered = scan_directory_for_psts(folder, recursive=True)
-            self.task_queue.put(("status", f"Found {len(discovered)} PST/OST file(s). Checking index..."))
+            total_files = len(discovered)
 
             if not discovered:
                 self.task_queue.put(("no_files_found", folder))
-                self.task_queue.put(("indexing_complete", 0))
+                self.task_queue.put(("indexing_complete", (0, 0.0)))
                 return
 
             total_new_indexed = 0
 
-            for f_info in discovered:
+            for f_idx, f_info in enumerate(discovered, start=1):
                 file_path = f_info["path"]
                 file_size = f_info["size"]
                 mtime = f_info["mtime"]
                 filename = f_info["filename"]
+                size_mb = file_size / (1024 * 1024)
+
+                base_pct = int(((f_idx - 1) / total_files) * 100)
+                file_weight = 100.0 / total_files
 
                 if not force_reindex and self.db.is_file_indexed_and_current(file_path, file_size, mtime):
-                    logger.info(f"Skipping already indexed file: {filename}")
+                    pct = int((f_idx / total_files) * 100)
+                    self.task_queue.put(("progress", (pct, f"File ({f_idx}/{total_files}): {filename} (Already indexed)")))
                     continue
 
                 _, ext = os.path.splitext(filename)
@@ -480,7 +491,8 @@ class FastPSTApp:
                     ))
                     continue
 
-                self.task_queue.put(("status", f"Indexing {filename}..."))
+                size_str = f"{size_mb:.1f} MB" if size_mb < 1024 else f"{(size_mb/1024):.2f} GB"
+                self.task_queue.put(("progress", (base_pct, f"Indexing ({f_idx}/{total_files}): {filename} ({size_str})...")))
                 
                 # Remove stale records if reindexing
                 self.db.remove_file_records(file_path)
@@ -494,10 +506,11 @@ class FastPSTApp:
                         for msg in parser.parse_all_messages():
                             batch.append(msg)
                             count += 1
-                            if len(batch) >= 100:
+                            if len(batch) >= 50:
                                 self.db.insert_emails_batch(batch)
                                 batch.clear()
-                                self.task_queue.put(("status", f"Indexing {filename}: {count} emails..."))
+                                curr_pct = min(99, int(base_pct + (file_weight * 0.8)))
+                                self.task_queue.put(("progress", (curr_pct, f"Indexing ({f_idx}/{total_files}): {filename} • {count:,} emails...")))
 
                         if batch:
                             self.db.insert_emails_batch(batch)
@@ -505,18 +518,20 @@ class FastPSTApp:
 
                     self.db.record_file_indexed(file_path, file_size, mtime, count)
                     total_new_indexed += count
-                    logger.info(f"Finished indexing {filename} ({count} emails)")
+                    file_done_pct = int((f_idx / total_files) * 100)
+                    self.task_queue.put(("progress", (file_done_pct, f"Indexed ({f_idx}/{total_files}): {filename} ({count:,} emails)")))
 
                 except Exception as e:
                     logger.error(f"Failed to parse {filename}: {e}")
                     self.task_queue.put(("status", f"Error parsing {filename}: {e}"))
 
-            self.task_queue.put(("indexing_complete", total_new_indexed))
+            elapsed = time.time() - start_time
+            self.task_queue.put(("indexing_complete", (total_new_indexed, elapsed)))
 
         except Exception as e:
             logger.error(f"Error in scan worker: {e}")
             self.task_queue.put(("status", f"Scan error: {e}"))
-            self.task_queue.put(("indexing_complete", 0))
+            self.task_queue.put(("indexing_complete", (0, 0.0)))
 
     def _process_queue(self):
         """Polls task queue to update UI from background threads safely."""
@@ -525,13 +540,26 @@ class FastPSTApp:
                 msg_type, data = self.task_queue.get_nowait()
                 if msg_type == "status":
                     self.status_label.config(text=data)
+                elif msg_type == "progress":
+                    pct, text = data
+                    self.progress_bar["value"] = pct
+                    self.progress_percent_label.config(text=f"{pct}%")
+                    self.status_label.config(text=text)
                 elif msg_type == "no_files_found":
-                    self.status_label.config(text=f"No .pst or .ost files found in {os.path.basename(data)}")
+                    self.status_label.config(text=f"No mail files found in {os.path.basename(data)}")
                 elif msg_type == "error_dialog":
                     messagebox.showwarning("Prerequisite Notice", data)
                 elif msg_type == "indexing_complete":
+                    count, elapsed = data
                     self.is_indexing = False
-                    self.progress_bar.stop()
+                    self.progress_bar["value"] = 100
+                    self.progress_percent_label.config(text="100%")
+                    total_in_db = self.db.get_total_email_count()
+                    if elapsed > 0:
+                        msg = f"✓ Indexing complete! {count:,} new emails indexed in {elapsed:.1f}s ({total_in_db:,} total)."
+                    else:
+                        msg = f"✓ Index current: {total_in_db:,} total emails loaded."
+                    self.status_label.config(text=msg)
                     self.execute_search()
         except queue.Empty:
             pass

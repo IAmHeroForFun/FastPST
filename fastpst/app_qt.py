@@ -6,6 +6,7 @@ Used automatically when Tkinter shared libraries are not present on the Linux ho
 
 import os
 import sys
+import time
 import threading
 import logging
 from typing import List, Dict, Any, Optional
@@ -31,9 +32,10 @@ logger = logging.getLogger("fastpst.app_qt")
 
 class WorkerSignals(QObject):
     status_updated = Signal(str)
+    progress_updated = Signal(int, int, str, float, int, int)  # (file_idx, total_files, filename, size_mb, count, percent)
     no_files_found = Signal(str)
     error_dialog = Signal(str)
-    indexing_complete = Signal(int)
+    indexing_complete = Signal(int, float)  # (total_emails, elapsed_sec)
 
 
 class FastPSTQtApp(QMainWindow):
@@ -41,7 +43,7 @@ class FastPSTQtApp(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("FastPST - Outlook Data File Viewer & Search")
+        self.setWindowTitle("FastPST - Universal Mail Data File Viewer & Search")
         self.resize(1150, 780)
         self.setMinimumSize(900, 600)
 
@@ -57,6 +59,7 @@ class FastPSTQtApp(QMainWindow):
 
         # Signals connection
         self.signals.status_updated.connect(self._on_status_updated)
+        self.signals.progress_updated.connect(self._on_progress_updated)
         self.signals.no_files_found.connect(self._on_no_files_found)
         self.signals.error_dialog.connect(self._on_error_dialog)
         self.signals.indexing_complete.connect(self._on_indexing_complete)
@@ -72,12 +75,12 @@ class FastPSTQtApp(QMainWindow):
         QTimer.singleShot(300, self.auto_start_scan)
 
     def _init_ui(self):
-        """Builds Qt user interface."""
+        """Builds Qt user interface with side-by-side layout and live progress tracking."""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(8, 8, 8, 4)
-        main_layout.setSpacing(6)
+        main_layout.setContentsMargins(10, 10, 10, 6)
+        main_layout.setSpacing(8)
 
         # 1. Top Toolbar (Folder & Actions)
         top_frame = QFrame()
@@ -102,7 +105,9 @@ class FastPSTQtApp(QMainWindow):
         top_layout.addWidget(self.scan_btn)
 
         self.count_badge = QLabel("0 Emails Loaded")
-        self.count_badge.setStyleSheet("background-color: #e0e0e0; color: #222; padding: 4px 8px; border-radius: 4px; font-weight: bold;")
+        self.count_badge.setStyleSheet(
+            "background-color: #2b579a; color: #ffffff; padding: 4px 10px; border-radius: 4px; font-weight: bold;"
+        )
         top_layout.addWidget(self.count_badge)
 
         main_layout.addWidget(top_frame)
@@ -141,7 +146,57 @@ class FastPSTQtApp(QMainWindow):
 
         main_layout.addWidget(search_frame)
 
-        # 3. Main Splitter (Left: Email List, Right: Reading Pane)
+        # 3. Enhanced Progress Panel (Visible during scanning & indexing)
+        self.progress_panel = QFrame()
+        self.progress_panel.setStyleSheet("""
+            QFrame#ProgressPanel {
+                background-color: #f1f5f9;
+                border: 1px solid #cbd5e1;
+                border-radius: 6px;
+            }
+        """)
+        self.progress_panel.setObjectName("ProgressPanel")
+        prog_layout = QVBoxLayout(self.progress_panel)
+        prog_layout.setContentsMargins(10, 8, 10, 8)
+        prog_layout.setSpacing(4)
+
+        prog_header_layout = QHBoxLayout()
+        self.progress_title_lbl = QLabel("⏳ Indexing Mail Data Files...")
+        self.progress_title_lbl.setStyleSheet("font-weight: bold; color: #1e3a8a;")
+        prog_header_layout.addWidget(self.progress_title_lbl)
+
+        self.progress_stats_lbl = QLabel("0% Complete")
+        self.progress_stats_lbl.setStyleSheet("font-weight: bold; color: #334155;")
+        self.progress_stats_lbl.setAlignment(Qt.AlignRight)
+        prog_header_layout.addWidget(self.progress_stats_lbl)
+        prog_layout.addLayout(prog_header_layout)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(12)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #cbd5e1;
+                border-radius: 4px;
+                background-color: #e2e8f0;
+            }
+            QProgressBar::chunk {
+                background-color: #2563eb;
+                border-radius: 3px;
+            }
+        """)
+        prog_layout.addWidget(self.progress_bar)
+
+        self.progress_detail_lbl = QLabel("Scanning folder for .pst, .ost, .mbox, .eml files...")
+        self.progress_detail_lbl.setStyleSheet("color: #64748b; font-size: 11px;")
+        prog_layout.addWidget(self.progress_detail_lbl)
+
+        self.progress_panel.setVisible(False)
+        main_layout.addWidget(self.progress_panel)
+
+        # 4. Main Horizontal Splitter (Left: Email List, Right: Reading Pane)
         splitter = QSplitter(Qt.Horizontal)
         main_layout.addWidget(splitter, stretch=1)
 
@@ -158,80 +213,94 @@ class FastPSTQtApp(QMainWindow):
         self.table.setSelectionMode(QTableWidget.SingleSelection)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSortingEnabled(True)
-
-        # Single click -> Show full email in reading pane on the right
-        self.table.itemSelectionChanged.connect(self._on_table_select)
-        # Double click -> Open directly in Outlook / Thunderbird!
-        self.table.itemDoubleClicked.connect(self._on_table_double_click)
-
+        self.table.setAlternatingRowColors(True)
+        self.table.itemSelectionChanged.connect(self.on_table_row_selected)
+        self.table.cellDoubleClicked.connect(self.on_table_double_clicked)
         splitter.addWidget(self.table)
 
         # Right Reading Pane
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(4, 0, 0, 0)
+        right_layout.setContentsMargins(6, 0, 0, 0)
         right_layout.setSpacing(6)
 
-        # Header card
+        # Header Info Card
         header_card = QFrame()
-        header_card.setFrameShape(QFrame.StyledPanel)
-        header_layout = QVBoxLayout(header_card)
-        header_layout.setContentsMargins(10, 10, 10, 10)
-        header_layout.setSpacing(4)
+        header_card.setStyleSheet("""
+            QFrame {
+                background-color: #f8f9fa;
+                border: 1px solid #dee2e6;
+                border-radius: 6px;
+                padding: 6px;
+            }
+        """)
+        hc_layout = QVBoxLayout(header_card)
+        hc_layout.setContentsMargins(6, 6, 6, 6)
+        hc_layout.setSpacing(4)
 
-        self.subject_lbl = QLabel("(Select an email from the left list to read)")
-        self.subject_lbl.setFont(QFont("sans-serif", 12, QFont.Bold))
-        self.subject_lbl.setWordWrap(True)
-        header_layout.addWidget(self.subject_lbl)
+        self.pane_subject = QLabel("Select an email from the left list to view")
+        self.pane_subject.setFont(QFont("sans-serif", 12, QFont.Bold))
+        self.pane_subject.setWordWrap(True)
+        hc_layout.addWidget(self.pane_subject)
 
-        self.from_lbl = QLabel("From: -")
-        header_layout.addWidget(self.from_lbl)
+        # Meta grid
+        self.pane_from = QLabel("From: -")
+        self.pane_from.setStyleSheet("color: #333;")
+        hc_layout.addWidget(self.pane_from)
 
-        self.to_lbl = QLabel("To: -")
-        header_layout.addWidget(self.to_lbl)
+        self.pane_to = QLabel("To: -")
+        self.pane_to.setStyleSheet("color: #555;")
+        hc_layout.addWidget(self.pane_to)
 
-        self.date_lbl = QLabel("Date: -")
-        header_layout.addWidget(self.date_lbl)
+        date_file_layout = QHBoxLayout()
+        self.pane_date = QLabel("Date: -")
+        self.pane_date.setStyleSheet("color: #666;")
+        date_file_layout.addWidget(self.pane_date)
 
-        self.attachments_lbl = QLabel("")
-        self.attachments_lbl.setStyleSheet("color: #0066cc; font-style: italic;")
-        header_layout.addWidget(self.attachments_lbl)
+        self.pane_file = QLabel("File: -")
+        self.pane_file.setStyleSheet("color: #666;")
+        date_file_layout.addWidget(self.pane_file, alignment=Qt.AlignRight)
+        hc_layout.addLayout(date_file_layout)
+
+        self.pane_attachments = QLabel("")
+        self.pane_attachments.setStyleSheet(
+            "color: #0b5ed7; font-weight: bold; background-color: #e7f1ff; padding: 2px 6px; border-radius: 4px;"
+        )
+        self.pane_attachments.setVisible(False)
+        hc_layout.addWidget(self.pane_attachments)
 
         right_layout.addWidget(header_card)
 
-        # Email Body Text Browser
-        self.body_browser = QTextBrowser()
-        self.body_browser.setFont(QFont("sans-serif", 10))
-        right_layout.addWidget(self.body_browser, stretch=1)
+        # Body text browser
+        self.body_view = QTextBrowser()
+        self.body_view.setOpenExternalLinks(True)
+        self.body_view.setFont(QFont("sans-serif", 10))
+        right_layout.addWidget(self.body_view, stretch=1)
 
         # Action Buttons
         action_layout = QHBoxLayout()
-        self.open_mail_btn = QPushButton("✉ Open in Outlook / Default Mail App")
-        self.open_mail_btn.setEnabled(False)
-        self.open_mail_btn.clicked.connect(self.open_selected_in_mail_client)
-        action_layout.addWidget(self.open_mail_btn)
+        action_layout.setSpacing(8)
 
-        self.save_as_btn = QPushButton("💾 Save Email As...")
-        self.save_as_btn.setEnabled(False)
-        self.save_as_btn.clicked.connect(self.save_selected_email_as)
-        action_layout.addWidget(self.save_as_btn)
+        self.open_app_btn = QPushButton("✉ Open in Outlook / Mail App")
+        self.open_app_btn.setStyleSheet("font-weight: bold; padding: 6px 12px;")
+        self.open_app_btn.clicked.connect(self.open_in_external_app)
+        self.open_app_btn.setEnabled(False)
+        action_layout.addWidget(self.open_app_btn)
 
-        action_layout.addStretch()
+        self.save_eml_btn = QPushButton("💾 Save Email As...")
+        self.save_eml_btn.clicked.connect(self.save_email_as)
+        self.save_eml_btn.setEnabled(False)
+        action_layout.addWidget(self.save_eml_btn)
+
         right_layout.addLayout(action_layout)
 
         splitter.addWidget(right_widget)
         splitter.setSizes([480, 670])
 
-        # 4. Status Bar
+        # 5. Bottom Status Bar
         status_bar = self.statusBar()
         self.status_lbl = QLabel("Ready")
         status_bar.addWidget(self.status_lbl, stretch=1)
-
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 0)
-        self.progress_bar.setMaximumWidth(180)
-        self.progress_bar.setVisible(False)
-        status_bar.addPermanentWidget(self.progress_bar)
 
     # --- Search & Table Population ---
 
@@ -258,133 +327,146 @@ class FastPSTQtApp(QMainWindow):
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(email_rows))
 
-        for row_idx, email in enumerate(email_rows):
-            att_sym = "📎" if email.get("has_attachments") else ""
+        for row_idx, email_item in enumerate(email_rows):
+            att_sym = "📎" if email_item.get("has_attachments") else ""
             
             items = [
-                QTableWidgetItem(email.get("date_sent", "")),
-                QTableWidgetItem(email.get("sender", "")),
-                QTableWidgetItem(email.get("subject") or "(No Subject)"),
+                QTableWidgetItem(email_item.get("date_sent", "")),
+                QTableWidgetItem(email_item.get("sender", "")),
+                QTableWidgetItem(email_item.get("subject") or "(No Subject)"),
                 QTableWidgetItem(att_sym),
-                QTableWidgetItem(email.get("file_name", ""))
+                QTableWidgetItem(email_item.get("file_name", ""))
             ]
             items[3].setTextAlignment(Qt.AlignCenter)
 
             for col_idx, item in enumerate(items):
-                # Store email ID in UserRole of the first item
                 if col_idx == 0:
-                    item.setData(Qt.UserRole, email["id"])
+                    item.setData(Qt.UserRole, email_item["id"])
                 self.table.setItem(row_idx, col_idx, item)
 
         self.table.setSortingEnabled(True)
-        self.count_badge.setText(f"{len(email_rows)} Emails")
-        self.status_lbl.setText(f"Displaying {len(email_rows)} email(s)")
+        self.count_badge.setText(f"{len(email_rows)} Emails Loaded")
 
-    # --- Selection & Redirection ---
+    # --- Selection & Reading Pane ---
 
-    def _on_table_select(self):
-        selected_rows = self.table.selectedItems()
-        if not selected_rows:
+    def on_table_row_selected(self):
+        selected_items = self.table.selectedItems()
+        if not selected_items:
             return
 
-        row = self.table.currentRow()
-        first_item = self.table.item(row, 0)
-        if not first_item:
+        # Fetch ID from the first column of the selected row
+        row = selected_items[0].row()
+        item = self.table.item(row, 0)
+        if not item:
             return
 
-        email_id = first_item.data(Qt.UserRole)
+        email_id = item.data(Qt.UserRole)
+        if not email_id:
+            return
+
         email_data = self.db.get_email_by_id(email_id)
-        if not email_data:
-            return
+        if email_data:
+            self.current_email_data = email_data
+            self._render_reading_pane(email_data)
 
-        self.current_email_data = email_data
+    def _render_reading_pane(self, email_data: Dict[str, Any]):
+        subject = email_data.get("subject") or "(No Subject)"
+        sender = email_data.get("sender") or "Unknown"
+        recipients = email_data.get("recipients") or "-"
+        date_sent = email_data.get("date_sent") or "-"
+        file_name = email_data.get("file_name") or "-"
+        attachments = email_data.get("attachments") or []
 
-        # Update Header
-        self.subject_lbl.setText(email_data.get("subject") or "(No Subject)")
-        self.from_lbl.setText(f"From: {email_data.get('sender', '')}")
-        self.to_lbl.setText(f"To: {email_data.get('recipients', '')}")
-        self.date_lbl.setText(f"Date: {email_data.get('date_sent', '')}   |   Source: {email_data.get('file_name', '')} ({email_data.get('folder_path', '')})")
+        self.pane_subject.setText(subject)
+        self.pane_from.setText(f"From: {sender}")
+        self.pane_to.setText(f"To: {recipients}")
+        self.pane_date.setText(f"Date: {date_sent}")
+        self.pane_file.setText(f"Source: {file_name}")
 
-        attachments = email_data.get("attachments", [])
         if attachments:
             att_names = ", ".join([a.get("name", "attachment") for a in attachments])
-            self.attachments_lbl.setText(f"📎 Attachments ({len(attachments)}): {att_names}")
+            self.pane_attachments.setText(f"📎 Attachments ({len(attachments)}): {att_names}")
+            self.pane_attachments.setVisible(True)
         else:
-            self.attachments_lbl.setText("")
+            self.pane_attachments.setVisible(False)
 
-        # Update Body
-        html = email_data.get("html_body")
-        plain = email_data.get("plain_body")
-        if html and len(html.strip()) > 0:
-            self.body_browser.setHtml(html)
-        elif plain and len(plain.strip()) > 0:
-            self.body_browser.setPlainText(plain)
+        # Display body
+        html_body = email_data.get("html_body")
+        plain_body = email_data.get("plain_body")
+
+        if html_body and html_body.strip():
+            self.body_view.setHtml(html_body)
+        elif plain_body and plain_body.strip():
+            self.body_view.setPlainText(plain_body)
         else:
-            self.body_browser.setPlainText("(No message body)")
+            self.body_view.setPlainText("(This message has no body content)")
 
-        self.open_mail_btn.setEnabled(True)
-        self.save_as_btn.setEnabled(True)
+        self.open_app_btn.setEnabled(True)
+        self.save_eml_btn.setEnabled(True)
 
-    def _on_table_double_click(self, item):
-        self._on_table_select()
-        self.open_selected_in_mail_client()
+    # --- Actions ---
 
-    def open_selected_in_mail_client(self):
+    def on_table_double_clicked(self, row: int, col: int):
+        self.on_table_row_selected()
+        self.open_in_external_app()
+
+    def open_in_external_app(self):
         if not self.current_email_data:
             return
-
-        self.status_lbl.setText("Exporting email to temporary file...")
         try:
-            temp_file = EmailExporter.export_to_temp_msg(self.current_email_data)
-            success, msg = MailLauncher.open_email_file(temp_file)
-            if success:
-                self.status_lbl.setText("Opened in default mail client.")
+            eml_path = EmailExporter.export_to_temp_eml(self.current_email_data)
+            success, msg = MailLauncher.open_email(eml_path)
+            if not success:
+                QMessageBox.warning(self, "Launch Warning", msg)
             else:
-                QMessageBox.warning(self, "Mail Client", msg)
-                self.status_lbl.setText(f"Notice: {msg}")
+                self.status_lbl.setText("Email opened in default mail client.")
         except Exception as e:
-            logger.error(f"Error opening email: {e}")
-            QMessageBox.critical(self, "Error", f"Could not launch email: {e}")
+            QMessageBox.critical(self, "Error Opening Email", str(e))
 
-    def save_selected_email_as(self):
+    def save_email_as(self):
         if not self.current_email_data:
             return
+        subj = "".join([c for c in (self.current_email_data.get("subject") or "email") if c.isalnum() or c in " -_"]).strip()
+        default_name = f"{subj[:40]}.eml"
 
-        subject_clean = "".join([c if c.isalnum() or c in " ._-" else "_" for c in (self.current_email_data.get("subject") or "email")])[:40]
-        default_name = f"{subject_clean}.eml"
-
-        target_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Email As", os.path.join(self.current_folder, default_name), "Email Message (*.eml);;All Files (*.*)"
+        save_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Email As", default_name, "Email Files (*.eml);;All Files (*)"
         )
-        if target_path:
+        if save_path:
             try:
-                EmailExporter.save_email_as(self.current_email_data, target_path)
-                QMessageBox.information(self, "Saved", f"Email saved to:\n{target_path}")
+                eml_bytes = EmailExporter.create_eml_bytes(self.current_email_data)
+                with open(save_path, "wb") as f:
+                    f.write(eml_bytes)
+                self.status_lbl.setText(f"Email saved to {os.path.basename(save_path)}")
             except Exception as e:
-                QMessageBox.critical(self, "Save Error", f"Failed to save email: {e}")
+                QMessageBox.critical(self, "Save Error", str(e))
+
+    # --- Scanning & Background Worker ---
 
     def browse_folder(self):
-        selected_dir = QFileDialog.getExistingDirectory(self, "Select Folder with .PST/.OST files", self.current_folder)
-        if selected_dir and os.path.exists(selected_dir):
-            self.current_folder = selected_dir
-            self.folder_input.setText(self.current_folder)
+        folder = QFileDialog.getExistingDirectory(self, "Select Folder Containing Mail Files", self.current_folder)
+        if folder:
+            self.current_folder = folder
+            self.folder_input.setText(folder)
             self.start_manual_scan()
-
-    # --- Background Scanning ---
-
-    def auto_start_scan(self):
-        self._start_scan_thread(force_reindex=False)
 
     def start_manual_scan(self):
         self._start_scan_thread(force_reindex=True)
+
+    def auto_start_scan(self):
+        self._start_scan_thread(force_reindex=False)
 
     def _start_scan_thread(self, force_reindex: bool):
         if self.is_indexing:
             return
 
         self.is_indexing = True
-        self.progress_bar.setVisible(True)
-        self.status_lbl.setText("Scanning directory for PST and OST files...")
+        self.scan_btn.setEnabled(False)
+        self.progress_panel.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.progress_stats_lbl.setText("0% Complete")
+        self.progress_detail_lbl.setText("Scanning folder for mail data files...")
+        self.status_lbl.setText("Scanning folder...")
 
         thread = threading.Thread(
             target=self._scan_worker,
@@ -394,24 +476,33 @@ class FastPSTQtApp(QMainWindow):
         thread.start()
 
     def _scan_worker(self, folder: str, force_reindex: bool):
+        start_time = time.time()
         try:
             discovered = scan_directory_for_psts(folder, recursive=True)
-            self.signals.status_updated.emit(f"Found {len(discovered)} PST/OST file(s). Checking index...")
+            total_files = len(discovered)
 
             if not discovered:
                 self.signals.no_files_found.emit(folder)
-                self.signals.indexing_complete.emit(0)
+                self.signals.indexing_complete.emit(0, 0.0)
                 return
 
             total_new_indexed = 0
 
-            for f_info in discovered:
+            for f_idx, f_info in enumerate(discovered, start=1):
                 file_path = f_info["path"]
                 file_size = f_info["size"]
                 mtime = f_info["mtime"]
                 filename = f_info["filename"]
+                size_mb = file_size / (1024 * 1024)
+
+                # Base percentage for the start of this file
+                base_pct = int(((f_idx - 1) / total_files) * 100)
+                file_weight = 100.0 / total_files
 
                 if not force_reindex and self.db.is_file_indexed_and_current(file_path, file_size, mtime):
+                    # Already indexed
+                    pct = int((f_idx / total_files) * 100)
+                    self.signals.progress_updated.emit(f_idx, total_files, filename, size_mb, 0, pct)
                     continue
 
                 _, ext = os.path.splitext(filename)
@@ -421,7 +512,8 @@ class FastPSTQtApp(QMainWindow):
                     )
                     continue
 
-                self.signals.status_updated.emit(f"Indexing {filename}...")
+                self.signals.status_updated.emit(f"Indexing ({f_idx}/{total_files}): {filename}...")
+                self.signals.progress_updated.emit(f_idx, total_files, filename, size_mb, 0, base_pct)
                 self.db.remove_file_records(file_path)
 
                 batch = []
@@ -433,10 +525,12 @@ class FastPSTQtApp(QMainWindow):
                         for msg in parser.parse_all_messages():
                             batch.append(msg)
                             count += 1
-                            if len(batch) >= 100:
+                            if len(batch) >= 50:
                                 self.db.insert_emails_batch(batch)
                                 batch.clear()
-                                self.signals.status_updated.emit(f"Indexing {filename}: {count} emails...")
+                                # Estimate internal progress
+                                curr_pct = min(99, int(base_pct + (file_weight * 0.8)))
+                                self.signals.progress_updated.emit(f_idx, total_files, filename, size_mb, count, curr_pct)
 
                         if batch:
                             self.db.insert_emails_batch(batch)
@@ -445,29 +539,62 @@ class FastPSTQtApp(QMainWindow):
                     self.db.record_file_indexed(file_path, file_size, mtime, count)
                     total_new_indexed += count
 
+                    # Completed this file
+                    file_done_pct = int((f_idx / total_files) * 100)
+                    self.signals.progress_updated.emit(f_idx, total_files, filename, size_mb, count, file_done_pct)
+
                 except Exception as e:
                     logger.error(f"Error parsing {filename}: {e}")
                     self.signals.status_updated.emit(f"Error parsing {filename}: {e}")
 
-            self.signals.indexing_complete.emit(total_new_indexed)
+            elapsed = time.time() - start_time
+            self.signals.indexing_complete.emit(total_new_indexed, elapsed)
 
         except Exception as e:
             logger.error(f"Scan error: {e}")
             self.signals.status_updated.emit(f"Scan error: {e}")
-            self.signals.indexing_complete.emit(0)
+            self.signals.indexing_complete.emit(0, 0.0)
 
-    def _on_status_updated(self, text: str):
-        self.status_lbl.setText(text)
+    # --- UI Signal Handlers ---
+
+    def _on_status_updated(self, message: str):
+        self.status_lbl.setText(message)
+
+    def _on_progress_updated(self, file_idx: int, total_files: int, filename: str, size_mb: float, count: int, percent: int):
+        self.progress_bar.setValue(percent)
+        self.progress_stats_lbl.setText(f"{percent}% Complete")
+        size_str = f"{size_mb:.1f} MB" if size_mb < 1024 else f"{(size_mb/1024):.2f} GB"
+        count_str = f" • {count:,} emails extracted" if count > 0 else ""
+        self.progress_detail_lbl.setText(
+            f"File ({file_idx}/{total_files}): {filename} ({size_str}){count_str}"
+        )
 
     def _on_no_files_found(self, folder: str):
-        self.status_lbl.setText(f"No .pst or .ost files found in {os.path.basename(folder)}")
+        self.progress_panel.setVisible(False)
+        self.status_lbl.setText("No .pst, .ost, .mbox, or .eml files found in this directory.")
 
-    def _on_error_dialog(self, text: str):
-        QMessageBox.warning(self, "Notice", text)
+    def _on_error_dialog(self, error_message: str):
+        QMessageBox.warning(self, "FastPST Notice", error_message)
 
-    def _on_indexing_complete(self, total: int):
+    def _on_indexing_complete(self, new_count: int, elapsed_sec: float):
         self.is_indexing = False
-        self.progress_bar.setVisible(False)
+        self.scan_btn.setEnabled(True)
+        self.progress_bar.setValue(100)
+        self.progress_stats_lbl.setText("100% Complete")
+
+        total_in_db = self.db.get_total_email_count()
+        if elapsed_sec > 0:
+            summary = f"✓ Indexing complete! {new_count:,} new emails indexed in {elapsed_sec:.1f}s ({total_in_db:,} total)."
+        else:
+            summary = f"✓ Index current: {total_in_db:,} total emails loaded."
+
+        self.progress_detail_lbl.setText(summary)
+        self.status_lbl.setText(summary)
+        self.count_badge.setText(f"{total_in_db:,} Emails Loaded")
+
+        # Hide progress card after 4 seconds of displaying completion
+        QTimer.singleShot(4000, lambda: self.progress_panel.setVisible(False) if not self.is_indexing else None)
+
         self.execute_search()
 
     def closeEvent(self, event):
@@ -476,14 +603,10 @@ class FastPSTQtApp(QMainWindow):
 
 
 def launch_app_qt():
-    """Entry point for PySide6 Qt GUI."""
+    """Entry point for PySide6 application."""
     app = QApplication.instance()
-    if not app:
+    if app is None:
         app = QApplication(sys.argv)
     window = FastPSTQtApp()
     window.show()
-    app.exec()
-
-
-if __name__ == "__main__":
-    launch_app_qt()
+    sys.exit(app.exec())
