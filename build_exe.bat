@@ -1,4 +1,5 @@
 @echo off
+cd /d "%~dp0"
 echo ===================================================
 echo FastPST - Windows Executable (.exe) Builder
 echo ===================================================
