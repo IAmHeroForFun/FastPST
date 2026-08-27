@@ -38,6 +38,10 @@ def build_windows_exe():
         "--hidden-import=libpff",
         "--hidden-import=email",
         "--hidden-import=tkinter",
+        "--hidden-import=PySide6",
+        "--hidden-import=PySide6.QtWidgets",
+        "--hidden-import=PySide6.QtCore",
+        "--hidden-import=PySide6.QtGui",
         "--clean",
         main_script,
     ]
