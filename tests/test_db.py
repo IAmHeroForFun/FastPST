@@ -116,6 +116,61 @@ class TestDatabaseManager(unittest.TestCase):
         results = self.db.search_emails("tacos", has_attachments_only=True)
         self.assertEqual(len(results), 0)
 
+    def test_get_folder_tree_and_filtered_search(self):
+        emails = [
+            {
+                "file_path": "/path/archive1.pst",
+                "file_name": "archive1.pst",
+                "folder_path": "Top of Outlook/Inbox",
+                "message_index": 0,
+                "subject": "Email 1",
+                "sender": "a@a.com",
+                "date_sent": "2026-08-20 10:00:00",
+                "plain_body": "Test 1",
+                "has_attachments": 0
+            },
+            {
+                "file_path": "/path/archive1.pst",
+                "file_name": "archive1.pst",
+                "folder_path": "Top of Outlook/Sent",
+                "message_index": 1,
+                "subject": "Email 2",
+                "sender": "b@b.com",
+                "date_sent": "2026-08-21 11:00:00",
+                "plain_body": "Test 2",
+                "has_attachments": 0
+            },
+            {
+                "file_path": "/path/backup2.ost",
+                "file_name": "backup2.ost",
+                "folder_path": "Inbox",
+                "message_index": 0,
+                "subject": "Email 3",
+                "sender": "c@c.com",
+                "date_sent": "2026-08-22 12:00:00",
+                "plain_body": "Test 3",
+                "has_attachments": 0
+            }
+        ]
+        self.db.insert_emails_batch(emails)
+
+        tree = self.db.get_folder_tree()
+        self.assertEqual(len(tree), 2)
+        
+        # Check archive1.pst
+        arch_node = [t for t in tree if t["file_name"] == "archive1.pst"][0]
+        self.assertEqual(arch_node["total_emails"], 2)
+        self.assertEqual(len(arch_node["folders"]), 2)
+
+        # Test filtering by file
+        res_file = self.db.search_emails("", file_path_filter="/path/archive1.pst")
+        self.assertEqual(len(res_file), 2)
+
+        # Test filtering by folder
+        res_folder = self.db.search_emails("", file_path_filter="/path/archive1.pst", folder_path_filter="Top of Outlook/Inbox")
+        self.assertEqual(len(res_folder), 1)
+        self.assertEqual(res_folder[0]["subject"], "Email 1")
+
 
 if __name__ == "__main__":
     unittest.main()

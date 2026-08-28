@@ -117,6 +117,41 @@ def get_light_stylesheet() -> str:
         color: #94a3b8;
         border-color: #e2e8f0;
     }
+    QTreeWidget {
+        background-color: #ffffff;
+        color: #0f172a;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 4px;
+    }
+    QTreeWidget::item {
+        padding: 4px 6px;
+        border-radius: 4px;
+    }
+    QTreeWidget::item:hover {
+        background-color: #f1f5f9;
+    }
+    QTreeWidget::item:selected {
+        background-color: #2563eb;
+        color: #ffffff;
+    }
+    QListWidget {
+        background-color: #ffffff;
+        color: #0f172a;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 2px;
+    }
+    QListWidget::item {
+        border-bottom: 1px solid #e2e8f0;
+    }
+    QListWidget::item:hover {
+        background-color: #f1f5f9;
+    }
+    QListWidget::item:selected {
+        background-color: #2563eb;
+        color: #ffffff;
+    }
     QTableWidget {
         background-color: #ffffff;
         alternate-background-color: #f8fafc;
@@ -239,6 +274,41 @@ def get_dark_stylesheet() -> str:
         background-color: #1f1f23;
         color: #52525b;
         border-color: #27272a;
+    }
+    QTreeWidget {
+        background-color: #18181b;
+        color: #f8fafc;
+        border: 1px solid #3f3f46;
+        border-radius: 6px;
+        padding: 4px;
+    }
+    QTreeWidget::item {
+        padding: 4px 6px;
+        border-radius: 4px;
+    }
+    QTreeWidget::item:hover {
+        background-color: #27272a;
+    }
+    QTreeWidget::item:selected {
+        background-color: #2563eb;
+        color: #ffffff;
+    }
+    QListWidget {
+        background-color: #18181b;
+        color: #f8fafc;
+        border: 1px solid #3f3f46;
+        border-radius: 6px;
+        padding: 2px;
+    }
+    QListWidget::item {
+        border-bottom: 1px solid #27272a;
+    }
+    QListWidget::item:hover {
+        background-color: #27272a;
+    }
+    QListWidget::item:selected {
+        background-color: #2563eb;
+        color: #ffffff;
     }
     QTableWidget {
         background-color: #18181b;

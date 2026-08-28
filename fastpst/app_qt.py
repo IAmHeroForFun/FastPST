@@ -1,7 +1,7 @@
 """
 FastPST - PySide6 (Qt) Desktop Application
-Provides high-performance email browsing, reading pane, search, mail client redirection,
-Outlook-style Dark/Light theme switching, and offline license verification.
+Provides high-performance email browsing, Outlook 3-pane folder hierarchy navigation,
+Outlook 2-line message card list, adaptive reading pane, search, Dark/Light theme switching, and offline licensing.
 """
 
 import os
@@ -11,14 +11,15 @@ import threading
 import logging
 from typing import List, Dict, Any, Optional
 
-from PySide6.QtCore import Qt, Signal, QObject, QTimer
+from PySide6.QtCore import Qt, Signal, QObject, QTimer, QRect, QSize
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLineEdit, QPushButton, QLabel, QTableWidget, QTableWidgetItem,
-    QHeaderView, QSplitter, QTextBrowser, QTextEdit, QComboBox, QCheckBox,
-    QProgressBar, QFileDialog, QMessageBox, QFrame, QDialog
+    QLineEdit, QPushButton, QLabel, QSplitter, QTextBrowser, QTextEdit,
+    QComboBox, QCheckBox, QProgressBar, QFileDialog, QMessageBox, QFrame,
+    QDialog, QTreeWidget, QTreeWidgetItem, QListWidget, QListWidgetItem,
+    QStyledItemDelegate, QStyle
 )
-from PySide6.QtGui import QFont, QIcon
+from PySide6.QtGui import QFont, QIcon, QPainter, QColor, QFontMetrics, QPen
 
 from fastpst.utils import get_app_directory, get_database_path
 from fastpst.scanner import scan_directory_for_psts
@@ -41,6 +42,122 @@ class WorkerSignals(QObject):
     no_files_found = Signal(str)
     error_dialog = Signal(str)
     indexing_complete = Signal(int, float)
+
+
+class EmailCardDelegate(QStyledItemDelegate):
+    """
+    Renders each email in Outlook's clean message card format:
+    Line 1: SENDER (Bold)                      [📎] Date & Time
+    Line 2: Subject (Medium)
+    Line 3: Preview Snippet (Muted, smaller)
+    """
+
+    def __init__(self, parent=None, theme_getter=None):
+        super().__init__(parent)
+        self.theme_getter = theme_getter
+
+    def sizeHint(self, option, index):
+        return QSize(option.rect.width(), 70)
+
+    def paint(self, painter: QPainter, option, index):
+        email_data = index.data(Qt.UserRole + 1)
+        if not email_data:
+            super().paint(painter, option, index)
+            return
+
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+
+        rect = option.rect
+        is_selected = bool(option.state & QStyle.State_Selected)
+        is_dark = self.theme_getter() == "dark" if self.theme_getter else False
+
+        # 1. Background fill
+        if is_selected:
+            painter.fillRect(rect, QColor("#2563eb"))
+        else:
+            bg_color = QColor("#18181b") if is_dark else QColor("#ffffff")
+            painter.fillRect(rect, bg_color)
+
+        # 2. Text colors
+        if is_selected:
+            sender_color = QColor("#ffffff")
+            date_color = QColor("#dbeafe")
+            subject_color = QColor("#ffffff")
+            snippet_color = QColor("#bfdbfe")
+            divider_color = QColor("#1d4ed8")
+        else:
+            sender_color = QColor("#f8fafc") if is_dark else QColor("#0f172a")
+            date_color = QColor("#94a3b8") if is_dark else QColor("#64748b")
+            subject_color = QColor("#e2e8f0") if is_dark else QColor("#1e293b")
+            snippet_color = QColor("#71717a") if is_dark else QColor("#64748b")
+            divider_color = QColor("#27272a") if is_dark else QColor("#f1f5f9")
+
+        # 3. Data fields
+        raw_sender = email_data.get("sender") or email_data.get("sender_name") or "Unknown"
+        if "<" in raw_sender:
+            sender = raw_sender.split("<")[0].strip().strip('"').strip("'")
+            if not sender:
+                sender = raw_sender
+        else:
+            sender = raw_sender
+
+        subject = email_data.get("subject") or "(No Subject)"
+        date_sent = email_data.get("date_sent") or ""
+        has_att = bool(email_data.get("has_attachments"))
+        snippet = (email_data.get("body_snippet") or "").strip().replace("\n", " ")
+
+        att_prefix = "📎 " if has_att else ""
+        date_text = f"{att_prefix}{date_sent}".strip()
+
+        margin_x = rect.left() + 10
+        margin_right = rect.right() - 10
+        content_width = rect.width() - 20
+
+        # --- LINE 1: Sender (Bold) + Date/Time (Right aligned) ---
+        date_font = QFont("-apple-system", 8)
+        painter.setFont(date_font)
+        painter.setPen(date_color)
+        fm_date = QFontMetrics(date_font)
+        date_width = fm_date.horizontalAdvance(date_text)
+        date_rect = QRect(margin_right - date_width, rect.top() + 6, date_width, 18)
+        painter.drawText(date_rect, Qt.AlignRight | Qt.AlignVCenter, date_text)
+
+        # Sender (Bold)
+        sender_font = QFont("-apple-system", 10, QFont.Bold)
+        painter.setFont(sender_font)
+        painter.setPen(sender_color)
+        sender_max_width = max(40, content_width - date_width - 12)
+        fm_sender = QFontMetrics(sender_font)
+        elided_sender = fm_sender.elidedText(sender, Qt.ElideRight, sender_max_width)
+        sender_rect = QRect(margin_x, rect.top() + 6, sender_max_width, 18)
+        painter.drawText(sender_rect, Qt.AlignLeft | Qt.AlignVCenter, elided_sender)
+
+        # --- LINE 2: Subject (Medium, 9.5pt) ---
+        subj_font = QFont("-apple-system", 9)
+        painter.setFont(subj_font)
+        painter.setPen(subject_color)
+        fm_subj = QFontMetrics(subj_font)
+        elided_subj = fm_subj.elidedText(subject, Qt.ElideRight, content_width)
+        subj_rect = QRect(margin_x, rect.top() + 26, content_width, 18)
+        painter.drawText(subj_rect, Qt.AlignLeft | Qt.AlignVCenter, elided_subj)
+
+        # --- LINE 3: Snippet Preview (8pt, Muted) ---
+        if snippet:
+            snip_font = QFont("-apple-system", 8)
+            painter.setFont(snip_font)
+            painter.setPen(snippet_color)
+            fm_snip = QFontMetrics(snip_font)
+            elided_snip = fm_snip.elidedText(snippet, Qt.ElideRight, content_width)
+            snip_rect = QRect(margin_x, rect.top() + 46, content_width, 16)
+            painter.drawText(snip_rect, Qt.AlignLeft | Qt.AlignVCenter, elided_snip)
+
+        # Bottom Divider line
+        painter.setPen(QPen(divider_color, 1))
+        painter.drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom())
+
+        painter.restore()
 
 
 class LicenseDialog(QDialog):
@@ -248,13 +365,13 @@ class LicenseDialog(QDialog):
 
 
 class FastPSTQtApp(QMainWindow):
-    """PySide6 Desktop Application for FastPST with Dark/Light Theme support."""
+    """PySide6 Desktop Application for FastPST with Outlook 3-Pane navigation and Dark/Light theme."""
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("FastPST - Universal Mail Data File Viewer & Search")
-        self.resize(1150, 780)
-        self.setMinimumSize(900, 600)
+        self.resize(1200, 800)
+        self.setMinimumSize(950, 600)
 
         # Base directories
         self.current_folder = get_app_directory()
@@ -264,7 +381,9 @@ class FastPSTQtApp(QMainWindow):
         # Theme
         self.current_theme = load_theme_preference(self.db)
 
-        # State
+        # State & Filters
+        self.selected_file_filter: Optional[str] = None
+        self.selected_folder_filter: Optional[str] = None
         self.current_email_data: Optional[Dict[str, Any]] = None
         self.is_indexing = False
         self.signals = WorkerSignals()
@@ -305,6 +424,9 @@ class FastPSTQtApp(QMainWindow):
             self.body_view.setStyleSheet("QTextBrowser { background-color: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; }")
             self.body_view.document().setDefaultStyleSheet("body { background-color: #ffffff; color: #0f172a; } * { color: #0f172a; } a { color: #2563eb; }")
 
+        # Repaint message list cards with active theme colors
+        self.list_widget.viewport().update()
+
         # Refresh reading pane if an email is currently loaded
         if self.current_email_data:
             self._render_reading_pane(self.current_email_data)
@@ -317,7 +439,7 @@ class FastPSTQtApp(QMainWindow):
         self._refresh_license_status()
 
     def _init_ui(self):
-        """Builds Qt user interface with side-by-side layout, progress tracking, and theme/license buttons."""
+        """Builds Qt user interface with Outlook 3-Pane layout, message cards, and theme/license buttons."""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
@@ -347,7 +469,7 @@ class FastPSTQtApp(QMainWindow):
         self.scan_btn.clicked.connect(self.start_manual_scan)
         top_layout.addWidget(self.scan_btn)
 
-        self.count_badge = QLabel("0 Emails Loaded")
+        self.count_badge = QLabel("0 Emails Shown")
         self.count_badge.setStyleSheet(
             "background-color: #2b579a; color: #ffffff; padding: 4px 10px; border-radius: 4px; font-weight: bold;"
         )
@@ -423,29 +545,27 @@ class FastPSTQtApp(QMainWindow):
         self.progress_panel.setVisible(False)
         main_layout.addWidget(self.progress_panel)
 
-        # 4. Main Horizontal Splitter (Left: Email List, Right: Reading Pane)
+        # 4. Outlook 3-Pane Horizontal Splitter
         splitter = QSplitter(Qt.Horizontal)
         main_layout.addWidget(splitter, stretch=1)
 
-        # Left Table: Emails List
-        self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["Date", "From", "Subject", "📎", "File"])
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SingleSelection)
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.setSortingEnabled(True)
-        self.table.setAlternatingRowColors(True)
-        self.table.itemSelectionChanged.connect(self.on_table_row_selected)
-        self.table.cellDoubleClicked.connect(self.on_table_double_clicked)
-        splitter.addWidget(self.table)
+        # Pane 1 (Left): Mailboxes & Folders Navigation Tree
+        self.tree_widget = QTreeWidget()
+        self.tree_widget.setHeaderLabel("📂 Mailboxes & Folders")
+        self.tree_widget.setMinimumWidth(180)
+        self.tree_widget.itemSelectionChanged.connect(self.on_tree_selection_changed)
+        splitter.addWidget(self.tree_widget)
 
-        # Right Reading Pane
+        # Pane 2 (Middle): Outlook 2-Line Message Cards List
+        self.list_widget = QListWidget()
+        self.list_widget.setMinimumWidth(280)
+        self.card_delegate = EmailCardDelegate(self.list_widget, theme_getter=lambda: self.current_theme)
+        self.list_widget.setItemDelegate(self.card_delegate)
+        self.list_widget.itemSelectionChanged.connect(self.on_list_item_selected)
+        self.list_widget.itemDoubleClicked.connect(self.on_list_item_double_clicked)
+        splitter.addWidget(self.list_widget)
+
+        # Pane 3 (Right): Reading Pane
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(6, 0, 0, 0)
@@ -458,7 +578,7 @@ class FastPSTQtApp(QMainWindow):
         hc_layout.setContentsMargins(8, 8, 8, 8)
         hc_layout.setSpacing(4)
 
-        self.pane_subject = QLabel("Select an email from the left list to view")
+        self.pane_subject = QLabel("Select an email from the list to view")
         self.pane_subject.setFont(QFont("sans-serif", 12, QFont.Bold))
         self.pane_subject.setWordWrap(True)
         hc_layout.addWidget(self.pane_subject)
@@ -477,7 +597,7 @@ class FastPSTQtApp(QMainWindow):
         self.pane_date.setObjectName("MetaSubLabel")
         date_file_layout.addWidget(self.pane_date)
 
-        self.pane_file = QLabel("File: -")
+        self.pane_file = QLabel("Source: -")
         self.pane_file.setObjectName("MetaSubLabel")
         date_file_layout.addWidget(self.pane_file, alignment=Qt.AlignRight)
         hc_layout.addLayout(date_file_layout)
@@ -512,7 +632,7 @@ class FastPSTQtApp(QMainWindow):
         right_layout.addLayout(action_layout)
 
         splitter.addWidget(right_widget)
-        splitter.setSizes([480, 670])
+        splitter.setSizes([230, 450, 520])
 
         # 5. Bottom Status Bar with Theme Switcher and License Button
         status_bar = self.statusBar()
@@ -621,7 +741,76 @@ class FastPSTQtApp(QMainWindow):
         # If licensed, proceed to auto-scan
         self.auto_start_scan()
 
-    # --- Search & Table Population ---
+    # --- Folder Tree Management ---
+
+    def _populate_folder_tree(self):
+        """Populates the left navigation tree with mailboxes and subfolders."""
+        self.tree_widget.clear()
+        total_in_db = self.db.get_total_email_count()
+
+        # Root: All Mailboxes
+        root_item = QTreeWidgetItem(self.tree_widget)
+        root_item.setText(0, f"📂 All Mailboxes ({total_in_db:,})")
+        root_item.setData(0, Qt.UserRole, (None, None))
+        root_item.setFont(0, QFont("sans-serif", 9, QFont.Bold))
+
+        files_data = self.db.get_folder_tree()
+        for f_info in files_data:
+            f_path = f_info["file_path"]
+            f_name = f_info["file_name"]
+            f_total = f_info["total_emails"]
+
+            file_node = QTreeWidgetItem(root_item)
+            file_node.setText(0, f"📦 {f_name} ({f_total:,})")
+            file_node.setData(0, Qt.UserRole, (f_path, None))
+            file_node.setFont(0, QFont("sans-serif", 9, QFont.Bold))
+
+            for folder_item in f_info.get("folders", []):
+                folder_path = folder_item["folder_path"]
+                display_name = folder_item["display_name"]
+                count = folder_item["count"]
+
+                folder_node = QTreeWidgetItem(file_node)
+                
+                # Contextual folder icon
+                icon_prefix = "📁"
+                dl = display_name.lower()
+                if "inbox" in dl:
+                    icon_prefix = "📥"
+                elif "sent" in dl:
+                    icon_prefix = "📤"
+                elif "deleted" in dl or "trash" in dl:
+                    icon_prefix = "🗑️"
+                elif "draft" in dl:
+                    icon_prefix = "📝"
+                elif "junk" in dl or "spam" in dl:
+                    icon_prefix = "🚫"
+
+                folder_node.setText(0, f"{icon_prefix} {display_name} ({count:,})")
+                folder_node.setData(0, Qt.UserRole, (f_path, folder_path))
+
+        # Expand all for clear visibility like Outlook
+        self.tree_widget.expandAll()
+        root_item.setSelected(True)
+
+    def on_tree_selection_changed(self):
+        """Filters email list when user clicks a file or folder in the tree."""
+        selected_items = self.tree_widget.selectedItems()
+        if not selected_items:
+            self.selected_file_filter = None
+            self.selected_folder_filter = None
+        else:
+            item = selected_items[0]
+            filter_data = item.data(0, Qt.UserRole)
+            if filter_data:
+                self.selected_file_filter, self.selected_folder_filter = filter_data
+            else:
+                self.selected_file_filter = None
+                self.selected_folder_filter = None
+
+        self.execute_search()
+
+    # --- Search & Message List Population ---
 
     def clear_search(self):
         self.search_input.clear()
@@ -638,46 +827,31 @@ class FastPSTQtApp(QMainWindow):
             query=query,
             field_filter=scope,
             has_attachments_only=has_att,
+            file_path_filter=self.selected_file_filter,
+            folder_path_filter=self.selected_folder_filter,
             limit=1000
         )
-        self._populate_table(results)
+        self._populate_list(results)
 
-    def _populate_table(self, email_rows: List[Dict[str, Any]]):
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(email_rows))
+    def _populate_list(self, email_rows: List[Dict[str, Any]]):
+        self.list_widget.clear()
 
-        for row_idx, email_item in enumerate(email_rows):
-            att_sym = "📎" if email_item.get("has_attachments") else ""
-            
-            items = [
-                QTableWidgetItem(email_item.get("date_sent", "")),
-                QTableWidgetItem(email_item.get("sender", "")),
-                QTableWidgetItem(email_item.get("subject") or "(No Subject)"),
-                QTableWidgetItem(att_sym),
-                QTableWidgetItem(email_item.get("file_name", ""))
-            ]
-            items[3].setTextAlignment(Qt.AlignCenter)
+        for email_item in email_rows:
+            item = QListWidgetItem(self.list_widget)
+            item.setData(Qt.UserRole, email_item["id"])
+            item.setData(Qt.UserRole + 1, email_item)
+            self.list_widget.addItem(item)
 
-            for col_idx, item in enumerate(items):
-                if col_idx == 0:
-                    item.setData(Qt.UserRole, email_item["id"])
-                self.table.setItem(row_idx, col_idx, item)
-
-        self.table.setSortingEnabled(True)
-        self.count_badge.setText(f"{len(email_rows)} Emails Loaded")
+        self.count_badge.setText(f"{len(email_rows)} Emails Shown")
 
     # --- Selection & Reading Pane ---
 
-    def on_table_row_selected(self):
-        selected_items = self.table.selectedItems()
+    def on_list_item_selected(self):
+        selected_items = self.list_widget.selectedItems()
         if not selected_items:
             return
 
-        row = selected_items[0].row()
-        item = self.table.item(row, 0)
-        if not item:
-            return
-
+        item = selected_items[0]
         email_id = item.data(Qt.UserRole)
         if not email_id:
             return
@@ -687,12 +861,17 @@ class FastPSTQtApp(QMainWindow):
             self.current_email_data = email_data
             self._render_reading_pane(email_data)
 
+    def on_list_item_double_clicked(self, item: QListWidgetItem):
+        self.on_list_item_selected()
+        self.open_in_external_app()
+
     def _render_reading_pane(self, email_data: Dict[str, Any]):
         subject = email_data.get("subject") or "(No Subject)"
         sender = email_data.get("sender") or "Unknown"
         recipients = email_data.get("recipients") or "-"
         date_sent = email_data.get("date_sent") or "-"
         file_name = email_data.get("file_name") or "-"
+        folder_path = email_data.get("folder_path") or "-"
         attachments = email_data.get("attachments") or []
         is_dark = self.current_theme == "dark"
 
@@ -700,7 +879,7 @@ class FastPSTQtApp(QMainWindow):
         self.pane_from.setText(f"From: {sender}")
         self.pane_to.setText(f"To: {recipients}")
         self.pane_date.setText(f"Date: {date_sent}")
-        self.pane_file.setText(f"Source: {file_name}")
+        self.pane_file.setText(f"Source: {file_name} • {folder_path}")
 
         if attachments:
             att_names = ", ".join([a.get("name", "attachment") for a in attachments])
@@ -725,16 +904,12 @@ class FastPSTQtApp(QMainWindow):
 
     # --- Actions ---
 
-    def on_table_double_clicked(self, row: int, col: int):
-        self.on_table_row_selected()
-        self.open_in_external_app()
-
     def open_in_external_app(self):
         if not self.current_email_data:
             return
         try:
             eml_path = EmailExporter.export_to_temp_eml(self.current_email_data)
-            success, msg = MailLauncher.open_email(eml_path)
+            success, msg = MailLauncher.open_email_file(eml_path)
             if not success:
                 QMessageBox.warning(self, "Launch Warning", msg)
             else:
@@ -887,6 +1062,7 @@ class FastPSTQtApp(QMainWindow):
     def _on_no_files_found(self, folder: str):
         self.progress_panel.setVisible(False)
         self.status_lbl.setText("No .pst, .ost, .mbox, or .eml files found in this directory.")
+        self._populate_folder_tree()
 
     def _on_error_dialog(self, error_message: str):
         QMessageBox.warning(self, "FastPST Notice", error_message)
@@ -905,9 +1081,12 @@ class FastPSTQtApp(QMainWindow):
 
         self.progress_detail_lbl.setText(summary)
         self.status_lbl.setText(summary)
-        self.count_badge.setText(f"{total_in_db:,} Emails Loaded")
+        self.count_badge.setText(f"{total_in_db:,} Emails Shown")
 
         QTimer.singleShot(4000, lambda: self.progress_panel.setVisible(False) if not self.is_indexing else None)
+        
+        # Populate the Outlook navigation tree and email list
+        self._populate_folder_tree()
         self.execute_search()
 
     def closeEvent(self, event):

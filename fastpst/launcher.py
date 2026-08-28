@@ -63,3 +63,6 @@ class MailLauncher:
             error_msg = f"Failed to open email in default mail client: {e}"
             logger.error(error_msg)
             return False, error_msg
+
+    # Alias for convenience
+    open_email = open_email_file

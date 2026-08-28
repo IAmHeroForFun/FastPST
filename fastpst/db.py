@@ -203,39 +203,121 @@ class DatabaseManager:
         finally:
             conn.close()
 
-    def get_all_emails(self, limit: int = 1000, offset: int = 0) -> List[Dict[str, Any]]:
-        """Retrieves all indexed emails ordered by date descending."""
+    def get_folder_tree(self) -> List[Dict[str, Any]]:
+        """
+        Retrieves the hierarchical folder tree of all indexed files and subfolders.
+        Returns a list of dicts for each file:
+        [
+            {
+                "file_path": "/path/to/archive.pst",
+                "file_name": "archive.pst",
+                "total_emails": 1240,
+                "folders": [
+                    {"folder_path": "Top of Outlook data file/Inbox", "display_name": "Inbox", "count": 850},
+                    ...
+                ]
+            },
+            ...
+        ]
+        """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, file_path, file_name, folder_path, message_index,
-                       subject, sender, recipients, date_sent, has_attachments, body_snippet
+                SELECT file_path, file_name, folder_path, COUNT(*) as count
                 FROM emails
-                ORDER BY date_sent DESC
-                LIMIT ? OFFSET ?
-            """, (limit, offset))
+                GROUP BY file_path, folder_path
+                ORDER BY file_name ASC, folder_path ASC
+            """)
+            rows = cursor.fetchall()
+
+            files_map = {}
+            for r in rows:
+                f_path = r["file_path"]
+                f_name = r["file_name"]
+                folder_p = r["folder_path"]
+                cnt = r["count"]
+
+                if f_path not in files_map:
+                    files_map[f_path] = {
+                        "file_path": f_path,
+                        "file_name": f_name,
+                        "total_emails": 0,
+                        "folders": []
+                    }
+
+                files_map[f_path]["total_emails"] += cnt
+
+                parts = [p.strip() for p in folder_p.replace("\\", "/").split("/") if p.strip()]
+                display_name = parts[-1] if parts else folder_p
+                if display_name.lower() in ("root", "top of outlook data file", "top of personal folders") and len(parts) > 1:
+                    display_name = parts[-1]
+
+                files_map[f_path]["folders"].append({
+                    "folder_path": folder_p,
+                    "display_name": display_name or folder_p,
+                    "count": cnt
+                })
+
+            return list(files_map.values())
+        finally:
+            conn.close()
+
+    def get_all_emails(
+        self,
+        file_path_filter: Optional[str] = None,
+        folder_path_filter: Optional[str] = None,
+        limit: int = 1000,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Retrieves all indexed emails ordered by date descending with optional file/folder filtering."""
+        sql = """
+            SELECT id, file_path, file_name, folder_path, message_index,
+                   subject, sender, recipients, date_sent, has_attachments, body_snippet
+            FROM emails
+            WHERE 1=1
+        """
+        params = []
+        if file_path_filter:
+            sql += " AND file_path = ?"
+            params.append(file_path_filter)
+        if folder_path_filter:
+            sql += " AND folder_path = ?"
+            params.append(folder_path_filter)
+
+        sql += " ORDER BY date_sent DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, params)
             return [dict(row) for row in cursor.fetchall()]
         finally:
             conn.close()
 
     def search_emails(
-        self, query: str, field_filter: str = "all", has_attachments_only: bool = False, limit: int = 1000
+        self,
+        query: str,
+        field_filter: str = "all",
+        has_attachments_only: bool = False,
+        file_path_filter: Optional[str] = None,
+        folder_path_filter: Optional[str] = None,
+        limit: int = 1000
     ) -> List[Dict[str, Any]]:
         """
-        Executes Full-Text Search using SQLite FTS5.
-        query: search string (supports prefix matching e.g. "search*")
-        field_filter: "all", "subject", "sender", "recipients", "body"
+        Executes Full-Text Search using SQLite FTS5 with optional file/folder filtering.
         """
         query = query.strip()
         if not query:
-            return self.get_all_emails(limit=limit)
+            return self.get_all_emails(
+                file_path_filter=file_path_filter,
+                folder_path_filter=folder_path_filter,
+                limit=limit
+            )
 
-        # Sanitize query for FTS5 syntax
-        # Escape double quotes
         sanitized = query.replace('"', '""')
-        
-        # Build FTS expression
+
         if field_filter == "subject":
             fts_query = f'subject: "{sanitized}"'
         elif field_filter == "sender":
@@ -245,10 +327,8 @@ class DatabaseManager:
         elif field_filter == "body":
             fts_query = f'plain_body: "{sanitized}"'
         else:
-            # All fields: token search with wildcard support
             tokens = [t for t in sanitized.split() if t]
             if len(tokens) == 1:
-                # Single word: append * for prefix search
                 fts_query = f'"{tokens[0]}"*'
             else:
                 fts_query = f'"{sanitized}"'
@@ -263,6 +343,14 @@ class DatabaseManager:
         """
         params = [fts_query]
 
+        if file_path_filter:
+            sql += " AND e.file_path = ?"
+            params.append(file_path_filter)
+
+        if folder_path_filter:
+            sql += " AND e.folder_path = ?"
+            params.append(folder_path_filter)
+
         if has_attachments_only:
             sql += " AND e.has_attachments = 1"
 
@@ -276,11 +364,22 @@ class DatabaseManager:
             return [dict(row) for row in cursor.fetchall()]
         except sqlite3.OperationalError as e:
             logger.warning(f"FTS query '{fts_query}' failed ({e}), falling back to LIKE query.")
-            return self._search_fallback(query, field_filter, has_attachments_only, limit)
+            return self._search_fallback(
+                query, field_filter, has_attachments_only,
+                file_path_filter, folder_path_filter, limit
+            )
         finally:
             conn.close()
 
-    def _search_fallback(self, query: str, field_filter: str, has_attachments_only: bool, limit: int):
+    def _search_fallback(
+        self,
+        query: str,
+        field_filter: str,
+        has_attachments_only: bool,
+        file_path_filter: Optional[str],
+        folder_path_filter: Optional[str],
+        limit: int
+    ):
         """Fallback to standard SQL LIKE query."""
         like_pattern = f"%{query}%"
         sql = """
@@ -305,6 +404,14 @@ class DatabaseManager:
         else:
             sql += " AND (subject LIKE ? OR sender LIKE ? OR recipients LIKE ? OR plain_body LIKE ?)"
             params.extend([like_pattern, like_pattern, like_pattern, like_pattern])
+
+        if file_path_filter:
+            sql += " AND file_path = ?"
+            params.append(file_path_filter)
+
+        if folder_path_filter:
+            sql += " AND folder_path = ?"
+            params.append(folder_path_filter)
 
         if has_attachments_only:
             sql += " AND has_attachments = 1"
