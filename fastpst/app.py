@@ -286,7 +286,7 @@ class FastPSTApp:
         saved_key = load_saved_license()
         if not saved_key:
             self.license_btn.config(
-                text="🔑 No License (Click to Activate)",
+                text="✕ License: No Key (Click to Activate)",
                 bg="#fee2e2",
                 fg="#991b1b"
             )
@@ -312,35 +312,42 @@ class FastPSTApp:
             return True
         else:
             self.license_btn.config(
-                text="✕ License Expired (Click to Renew)",
+                text="✕ License: Expired (Click to Renew)",
                 bg="#fee2e2",
                 fg="#991b1b"
             )
             return False
 
     def open_license_dialog(self, mandatory: bool = False):
-        """Opens the license details / key activation window."""
+        """Opens the unified About & License window."""
         dlg = tk.Toplevel(self.root)
-        dlg.title("FastPST - License & Activation")
-        dlg.geometry("500x360")
+        dlg.title("About FastPST & License")
+        dlg.geometry("520x460")
         dlg.transient(self.root)
         dlg.grab_set()
 
-        # Header
-        ttk.Label(dlg, text="🔑 FastPST License Details", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 12, "bold")).pack(pady=(12, 6))
+        # 1. About Frame
+        about_frame = ttk.LabelFrame(dlg, text=" About FastPST ", padding="10")
+        about_frame.pack(fill=tk.X, padx=14, pady=(10, 4))
 
-        # Status Card
-        info_frame = ttk.LabelFrame(dlg, text=" Current License Status ", padding="10")
-        info_frame.pack(fill=tk.X, padx=16, pady=6)
+        ttk.Label(about_frame, text="📬 FastPST - Universal Mail Data File Viewer", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 11, "bold"), foreground="#1e3a8a").pack(anchor="w")
+        ttk.Label(about_frame, text="Version 1.0.0 (64-bit Standalone)", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 9, "bold"), foreground="#475569").pack(anchor="w", pady=(1, 2))
+        ttk.Label(about_frame, text="Fast offline viewer & search engine for Outlook & Thunderbird archives.", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 9)).pack(anchor="w")
+        ttk.Label(about_frame, text="Supported Formats: .pst • .ost • .mbox • .mbx • .eml", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 9, "bold"), foreground="#0369a1").pack(anchor="w", pady=(2, 1))
+        ttk.Label(about_frame, text="GitHub: github.com/IAmHeroForFun/FastPST", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 9)).pack(anchor="w")
 
-        status_lbl = ttk.Label(info_frame, text="Status: Checking...", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 10, "bold"))
-        status_lbl.pack(anchor="w", pady=2)
+        # 2. License Status Card
+        info_frame = ttk.LabelFrame(dlg, text=" License Information ", padding="10")
+        info_frame.pack(fill=tk.X, padx=14, pady=4)
 
-        client_lbl = ttk.Label(info_frame, text="Licensed To: -")
-        client_lbl.pack(anchor="w", pady=1)
+        status_lbl = ttk.Label(info_frame, text="Status: Checking...", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 9, "bold"))
+        status_lbl.pack(anchor="w", pady=1)
 
-        expiry_lbl = ttk.Label(info_frame, text="Expires: -")
-        expiry_lbl.pack(anchor="w", pady=1)
+        client_lbl = ttk.Label(info_frame, text="Licensed To: -", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 9))
+        client_lbl.pack(anchor="w")
+
+        expiry_lbl = ttk.Label(info_frame, text="Expires: -", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 9))
+        expiry_lbl.pack(anchor="w")
 
         # Check existing key
         saved_key = load_saved_license()
@@ -358,16 +365,16 @@ class FastPSTApp:
         else:
             status_lbl.config(text="Status: ✕ No active license found", foreground="#dc2626")
 
-        # Input Frame
-        input_frame = ttk.Frame(dlg, padding="16 6 16 6")
+        # 3. Input Frame
+        input_frame = ttk.Frame(dlg, padding="14 4 14 4")
         input_frame.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(input_frame, text="Enter / Paste License Key:", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 9, "bold")).pack(anchor="w", pady=(0, 4))
-        key_entry = scrolledtext.ScrolledText(input_frame, height=4, font=("Consolas" if sys.platform == "win32" else "Monospace", 9))
+        ttk.Label(input_frame, text="Enter / Update License Key:", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 9, "bold")).pack(anchor="w", pady=(0, 2))
+        key_entry = scrolledtext.ScrolledText(input_frame, height=3, font=("Consolas" if sys.platform == "win32" else "Monospace", 9))
         key_entry.pack(fill=tk.BOTH, expand=True)
 
-        # Buttons
-        btn_frame = ttk.Frame(dlg, padding="16 8 16 12")
+        # 4. Buttons
+        btn_frame = ttk.Frame(dlg, padding="14 6 14 10")
         btn_frame.pack(fill=tk.X)
 
         def do_activate():
@@ -391,7 +398,7 @@ class FastPSTApp:
             else:
                 messagebox.showerror("Activation Failed", f"License verification failed:\n\n{msg_k}", parent=dlg)
 
-        activate_btn = ttk.Button(btn_frame, text="💾 Activate License", command=do_activate)
+        activate_btn = ttk.Button(btn_frame, text="💾 Activate / Update Key", command=do_activate)
         activate_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         if not mandatory:

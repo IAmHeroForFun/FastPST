@@ -1,7 +1,7 @@
 """
 FastPST - PySide6 (Qt) Desktop Application
 Provides high-performance email browsing, reading pane, search, and mail client redirection.
-Includes offline cryptographic license verification and bottom status bar indicator.
+Includes unified About & Offline Cryptographic License verification with high-contrast UI.
 """
 
 import os
@@ -39,7 +39,7 @@ class WorkerSignals(QObject):
     indexing_complete = Signal(int, float)
 
 
-class LicenseActivationDialog(QDialog):
+class LicenseDialog(QDialog):
     """Modal dialog for viewing license status and activating/renewing offline keys."""
 
     def __init__(self, parent=None, db_manager=None, mandatory: bool = False):
@@ -49,69 +49,133 @@ class LicenseActivationDialog(QDialog):
         self.license_activated = False
 
         self.setWindowTitle("FastPST - License & Activation")
-        self.resize(500, 360)
+        self.resize(520, 440)
         self.setModal(True)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #f8fafc;
+            }
+            QLabel {
+                color: #0f172a;
+            }
+        """)
         self._init_ui()
         self._check_current_license()
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
-        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 18)
 
-        # Title / Info Banner
-        header_lbl = QLabel("🔑 FastPST License Details")
-        header_lbl.setFont(QFont("sans-serif", 13, QFont.Bold))
-        layout.addWidget(header_lbl)
-
-        # Info Box
-        self.info_card = QFrame()
-        self.info_card.setStyleSheet("""
+        # 1. App Info Header Card
+        about_card = QFrame()
+        about_card.setStyleSheet("""
             QFrame {
-                background-color: #f8fafc;
+                background-color: #ffffff;
                 border: 1px solid #cbd5e1;
-                border-radius: 6px;
-                padding: 8px;
+                border-radius: 8px;
+                padding: 10px;
+            }
+            QLabel {
+                background: transparent;
             }
         """)
-        card_layout = QVBoxLayout(self.info_card)
-        card_layout.setSpacing(4)
+        about_layout = QVBoxLayout(about_card)
+        about_layout.setSpacing(4)
+
+        app_title = QLabel("FastPST — Mail Data File Viewer")
+        app_title.setFont(QFont("sans-serif", 12, QFont.Bold))
+        app_title.setStyleSheet("color: #1e3a8a; font-weight: bold;")
+        about_layout.addWidget(app_title)
+
+        version_lbl = QLabel("Version 1.0.0 (Standalone Edition)")
+        version_lbl.setFont(QFont("sans-serif", 9))
+        version_lbl.setStyleSheet("color: #475569;")
+        about_layout.addWidget(version_lbl)
+
+        formats_lbl = QLabel("Supported: .pst • .ost • .mbox • .mbx • .eml")
+        formats_lbl.setStyleSheet("color: #0284c7; font-weight: bold; font-size: 11px;")
+        about_layout.addWidget(formats_lbl)
+
+        github_lbl = QLabel("GitHub: <a href='https://github.com/IAmHeroForFun/FastPST' style='color: #2563eb;'>github.com/IAmHeroForFun/FastPST</a>")
+        github_lbl.setOpenExternalLinks(True)
+        github_lbl.setStyleSheet("font-size: 11px;")
+        about_layout.addWidget(github_lbl)
+
+        layout.addWidget(about_card)
+
+        # 2. License Status Card
+        self.lic_card = QFrame()
+        self.lic_card.setStyleSheet("""
+            QFrame {
+                background-color: #ffffff;
+                border: 1px solid #cbd5e1;
+                border-radius: 8px;
+                padding: 10px;
+            }
+            QLabel {
+                background: transparent;
+            }
+        """)
+        lic_layout = QVBoxLayout(self.lic_card)
+        lic_layout.setSpacing(4)
+
+        lic_header = QLabel("License Information")
+        lic_header.setFont(QFont("sans-serif", 10, QFont.Bold))
+        lic_header.setStyleSheet("color: #0f172a; font-weight: bold;")
+        lic_layout.addWidget(lic_header)
 
         self.status_lbl = QLabel("Status: Checking...")
         self.status_lbl.setFont(QFont("sans-serif", 10, QFont.Bold))
-        card_layout.addWidget(self.status_lbl)
+        lic_layout.addWidget(self.status_lbl)
 
         self.client_lbl = QLabel("Licensed To: -")
-        card_layout.addWidget(self.client_lbl)
+        self.client_lbl.setStyleSheet("color: #334155;")
+        lic_layout.addWidget(self.client_lbl)
 
-        self.expiry_lbl = QLabel("Expires: -")
-        card_layout.addWidget(self.expiry_lbl)
+        self.expiry_lbl = QLabel("Expiration: -")
+        self.expiry_lbl.setStyleSheet("color: #334155;")
+        lic_layout.addWidget(self.expiry_lbl)
 
-        layout.addWidget(self.info_card)
+        layout.addWidget(self.lic_card)
 
-        # Key Input section
-        key_lbl = QLabel("Enter / Paste License Key:")
-        key_lbl.setFont(QFont("sans-serif", 10, QFont.Bold))
+        # 3. Key Input section
+        key_lbl = QLabel("Enter / Update License Key:")
+        key_lbl.setFont(QFont("sans-serif", 9, QFont.Bold))
+        key_lbl.setStyleSheet("color: #0f172a;")
         layout.addWidget(key_lbl)
 
         self.key_input = QTextEdit()
         self.key_input.setPlaceholderText("Paste your FPST-... license key here")
-        self.key_input.setFixedHeight(75)
+        self.key_input.setFixedHeight(55)
         self.key_input.setFont(QFont("Monospace", 9))
+        self.key_input.setStyleSheet("""
+            QTextEdit {
+                background-color: #ffffff;
+                color: #0f172a;
+                border: 1px solid #94a3b8;
+                border-radius: 6px;
+                padding: 6px;
+            }
+            QTextEdit:focus {
+                border: 1px solid #2563eb;
+            }
+        """)
         layout.addWidget(self.key_input)
 
-        # Buttons
+        # 4. Action Buttons
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(8)
 
-        self.activate_btn = QPushButton("💾 Activate License")
+        self.activate_btn = QPushButton("💾 Activate / Update Key")
         self.activate_btn.setStyleSheet("""
             QPushButton {
                 background-color: #2563eb;
-                color: white;
+                color: #ffffff;
                 font-weight: bold;
-                padding: 6px 14px;
-                border-radius: 4px;
+                padding: 7px 16px;
+                border-radius: 5px;
+                border: none;
             }
             QPushButton:hover {
                 background-color: #1d4ed8;
@@ -122,6 +186,19 @@ class LicenseActivationDialog(QDialog):
 
         if not self.mandatory:
             close_btn = QPushButton("Close")
+            close_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #e2e8f0;
+                    color: #1e293b;
+                    font-weight: bold;
+                    padding: 7px 14px;
+                    border-radius: 5px;
+                    border: 1px solid #cbd5e1;
+                }
+                QPushButton:hover {
+                    background-color: #cbd5e1;
+                }
+            """)
             close_btn.clicked.connect(self.accept)
             btn_layout.addWidget(close_btn)
 
@@ -138,13 +215,13 @@ class LicenseActivationDialog(QDialog):
                 self.status_lbl.setText(f"Status: ✓ Active ({days} day{'s' if days != 1 else ''} remaining)")
                 self.status_lbl.setStyleSheet("color: #16a34a; font-weight: bold;")
                 self.client_lbl.setText(f"Licensed To: {client}")
-                self.expiry_lbl.setText(f"Expiration Date: {expiry}")
+                self.expiry_lbl.setText(f"Expiration: {expiry}")
                 return
             else:
                 self.status_lbl.setText(f"Status: ✕ {msg}")
                 self.status_lbl.setStyleSheet("color: #dc2626; font-weight: bold;")
                 self.client_lbl.setText(f"Licensed To: {details.get('client', '-')}")
-                self.expiry_lbl.setText(f"Expiration Date: {details.get('expiry', '-')}")
+                self.expiry_lbl.setText(f"Expiration: {details.get('expiry', '-')}")
                 return
 
         self.status_lbl.setText("Status: ✕ No active license found")
@@ -209,7 +286,7 @@ class FastPSTQtApp(QMainWindow):
         QTimer.singleShot(100, self._check_startup_license)
 
     def _init_ui(self):
-        """Builds Qt user interface with side-by-side layout, progress tracking, and license badge."""
+        """Builds Qt user interface with side-by-side layout, progress tracking, and license button."""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
@@ -431,7 +508,7 @@ class FastPSTQtApp(QMainWindow):
         splitter.addWidget(right_widget)
         splitter.setSizes([480, 670])
 
-        # 5. Bottom Status Bar with Clickable License Badge
+        # 5. Bottom Status Bar with Clickable License Button
         status_bar = self.statusBar()
         self.status_lbl = QLabel("Ready")
         status_bar.addWidget(self.status_lbl, stretch=1)
@@ -439,7 +516,7 @@ class FastPSTQtApp(QMainWindow):
         # Bottom Right Clickable License Badge
         self.license_badge_btn = QPushButton("🔑 License: Checking...")
         self.license_badge_btn.setCursor(Qt.PointingHandCursor)
-        self.license_badge_btn.setToolTip("Click to view license details or enter a new license key")
+        self.license_badge_btn.setToolTip("Click to view license status or enter a new license key")
         self.license_badge_btn.clicked.connect(self.open_license_dialog)
         status_bar.addPermanentWidget(self.license_badge_btn)
 
@@ -449,14 +526,14 @@ class FastPSTQtApp(QMainWindow):
         """Updates the bottom right license badge styling and text."""
         saved_key = load_saved_license()
         if not saved_key:
-            self.license_badge_btn.setText("🔑 No License (Click to Activate)")
+            self.license_badge_btn.setText("✕ License: No Key (Click to Activate)")
             self.license_badge_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #fee2e2;
                     color: #991b1b;
                     border: 1px solid #f87171;
                     border-radius: 4px;
-                    padding: 2px 8px;
+                    padding: 2px 10px;
                     font-weight: bold;
                 }
                 QPushButton:hover {
@@ -479,7 +556,7 @@ class FastPSTQtApp(QMainWindow):
                         color: #92400e;
                         border: 1px solid #fcd34d;
                         border-radius: 4px;
-                        padding: 2px 8px;
+                        padding: 2px 10px;
                         font-weight: bold;
                     }
                     QPushButton:hover {
@@ -495,7 +572,7 @@ class FastPSTQtApp(QMainWindow):
                         color: #166534;
                         border: 1px solid #86efac;
                         border-radius: 4px;
-                        padding: 2px 8px;
+                        padding: 2px 10px;
                         font-weight: bold;
                     }
                     QPushButton:hover {
@@ -505,14 +582,14 @@ class FastPSTQtApp(QMainWindow):
             return True
         else:
             # Expired / Tampered (Red)
-            self.license_badge_btn.setText("✕ License Expired (Click to Renew)")
+            self.license_badge_btn.setText("✕ License: Expired (Click to Renew)")
             self.license_badge_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #fee2e2;
                     color: #991b1b;
                     border: 1px solid #f87171;
                     border-radius: 4px;
-                    padding: 2px 8px;
+                    padding: 2px 10px;
                     font-weight: bold;
                 }
                 QPushButton:hover {
@@ -522,8 +599,8 @@ class FastPSTQtApp(QMainWindow):
             return False
 
     def open_license_dialog(self):
-        """Opens the license details / key entry dialog."""
-        dialog = LicenseActivationDialog(self, db_manager=self.db, mandatory=False)
+        """Opens the License & Activation window."""
+        dialog = LicenseDialog(self, db_manager=self.db, mandatory=False)
         dialog.exec()
         self._refresh_license_status()
 
@@ -531,7 +608,7 @@ class FastPSTQtApp(QMainWindow):
         """Validates license on application startup; prompts for activation if required."""
         is_licensed = self._refresh_license_status()
         if not is_licensed:
-            dialog = LicenseActivationDialog(self, db_manager=self.db, mandatory=True)
+            dialog = LicenseDialog(self, db_manager=self.db, mandatory=True)
             if dialog.exec() != QDialog.Accepted or not self._refresh_license_status():
                 QMessageBox.critical(
                     self, "Activation Required",
