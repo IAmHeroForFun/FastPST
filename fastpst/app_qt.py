@@ -1,7 +1,7 @@
 """
 FastPST - PySide6 (Qt) Desktop Application
-Provides high-performance email browsing, reading pane, search, and mail client redirection.
-Includes unified About & Offline Cryptographic License verification with high-contrast UI.
+Provides high-performance email browsing, reading pane, search, mail client redirection,
+Outlook-style Dark/Light theme switching, and offline license verification.
 """
 
 import os
@@ -27,6 +27,10 @@ from fastpst.db import DatabaseManager
 from fastpst.exporter import EmailExporter, cleanup_temp_files
 from fastpst.launcher import MailLauncher
 from fastpst.license import verify_license_token, save_license, load_saved_license
+from fastpst.theme import (
+    apply_theme, save_theme_preference, load_theme_preference,
+    format_email_body_html
+)
 
 logger = logging.getLogger("fastpst.app_qt")
 
@@ -42,62 +46,60 @@ class WorkerSignals(QObject):
 class LicenseDialog(QDialog):
     """Modal dialog for viewing license status and activating/renewing offline keys."""
 
-    def __init__(self, parent=None, db_manager=None, mandatory: bool = False):
+    def __init__(self, parent=None, db_manager=None, mandatory: bool = False, theme: str = "light"):
         super().__init__(parent)
         self.db = db_manager
         self.mandatory = mandatory
+        self.theme = theme
         self.license_activated = False
 
         self.setWindowTitle("FastPST - License & Activation")
         self.resize(520, 440)
         self.setModal(True)
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #f8fafc;
-            }
-            QLabel {
-                color: #0f172a;
-            }
-        """)
         self._init_ui()
         self._check_current_license()
 
     def _init_ui(self):
+        is_dark = self.theme == "dark"
+        card_bg = "#27272a" if is_dark else "#ffffff"
+        card_border = "#3f3f46" if is_dark else "#cbd5e1"
+        input_bg = "#1f1f23" if is_dark else "#ffffff"
+        input_text = "#f8fafc" if is_dark else "#0f172a"
+        sub_text = "#94a3b8" if is_dark else "#475569"
+
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
         layout.setContentsMargins(20, 20, 20, 18)
 
         # 1. App Info Header Card
         about_card = QFrame()
-        about_card.setStyleSheet("""
-            QFrame {
-                background-color: #ffffff;
-                border: 1px solid #cbd5e1;
+        about_card.setStyleSheet(f"""
+            QFrame {{
+                background-color: {card_bg};
+                border: 1px solid {card_border};
                 border-radius: 8px;
                 padding: 10px;
-            }
-            QLabel {
-                background: transparent;
-            }
+            }}
         """)
         about_layout = QVBoxLayout(about_card)
         about_layout.setSpacing(4)
 
         app_title = QLabel("FastPST — Mail Data File Viewer")
         app_title.setFont(QFont("sans-serif", 12, QFont.Bold))
-        app_title.setStyleSheet("color: #1e3a8a; font-weight: bold;")
+        title_color = "#38bdf8" if is_dark else "#1e3a8a"
+        app_title.setStyleSheet(f"color: {title_color}; font-weight: bold;")
         about_layout.addWidget(app_title)
 
         version_lbl = QLabel("Version 1.0.0 (Standalone Edition)")
         version_lbl.setFont(QFont("sans-serif", 9))
-        version_lbl.setStyleSheet("color: #475569;")
+        version_lbl.setStyleSheet(f"color: {sub_text};")
         about_layout.addWidget(version_lbl)
 
         formats_lbl = QLabel("Supported: .pst • .ost • .mbox • .mbx • .eml")
         formats_lbl.setStyleSheet("color: #0284c7; font-weight: bold; font-size: 11px;")
         about_layout.addWidget(formats_lbl)
 
-        github_lbl = QLabel("GitHub: <a href='https://github.com/IAmHeroForFun/FastPST' style='color: #2563eb;'>github.com/IAmHeroForFun/FastPST</a>")
+        github_lbl = QLabel("GitHub: <a href='https://github.com/IAmHeroForFun/FastPST' style='color: #38bdf8;'>github.com/IAmHeroForFun/FastPST</a>")
         github_lbl.setOpenExternalLinks(True)
         github_lbl.setStyleSheet("font-size: 11px;")
         about_layout.addWidget(github_lbl)
@@ -106,23 +108,20 @@ class LicenseDialog(QDialog):
 
         # 2. License Status Card
         self.lic_card = QFrame()
-        self.lic_card.setStyleSheet("""
-            QFrame {
-                background-color: #ffffff;
-                border: 1px solid #cbd5e1;
+        self.lic_card.setStyleSheet(f"""
+            QFrame {{
+                background-color: {card_bg};
+                border: 1px solid {card_border};
                 border-radius: 8px;
                 padding: 10px;
-            }
-            QLabel {
-                background: transparent;
-            }
+            }}
         """)
         lic_layout = QVBoxLayout(self.lic_card)
         lic_layout.setSpacing(4)
 
         lic_header = QLabel("License Information")
         lic_header.setFont(QFont("sans-serif", 10, QFont.Bold))
-        lic_header.setStyleSheet("color: #0f172a; font-weight: bold;")
+        lic_header.setStyleSheet(f"color: {input_text}; font-weight: bold;")
         lic_layout.addWidget(lic_header)
 
         self.status_lbl = QLabel("Status: Checking...")
@@ -130,11 +129,11 @@ class LicenseDialog(QDialog):
         lic_layout.addWidget(self.status_lbl)
 
         self.client_lbl = QLabel("Licensed To: -")
-        self.client_lbl.setStyleSheet("color: #334155;")
+        self.client_lbl.setStyleSheet(f"color: {sub_text};")
         lic_layout.addWidget(self.client_lbl)
 
         self.expiry_lbl = QLabel("Expiration: -")
-        self.expiry_lbl.setStyleSheet("color: #334155;")
+        self.expiry_lbl.setStyleSheet(f"color: {sub_text};")
         lic_layout.addWidget(self.expiry_lbl)
 
         layout.addWidget(self.lic_card)
@@ -142,24 +141,24 @@ class LicenseDialog(QDialog):
         # 3. Key Input section
         key_lbl = QLabel("Enter / Update License Key:")
         key_lbl.setFont(QFont("sans-serif", 9, QFont.Bold))
-        key_lbl.setStyleSheet("color: #0f172a;")
+        key_lbl.setStyleSheet(f"color: {input_text};")
         layout.addWidget(key_lbl)
 
         self.key_input = QTextEdit()
         self.key_input.setPlaceholderText("Paste your FPST-... license key here")
         self.key_input.setFixedHeight(55)
         self.key_input.setFont(QFont("Monospace", 9))
-        self.key_input.setStyleSheet("""
-            QTextEdit {
-                background-color: #ffffff;
-                color: #0f172a;
-                border: 1px solid #94a3b8;
+        self.key_input.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {input_bg};
+                color: {input_text};
+                border: 1px solid {card_border};
                 border-radius: 6px;
                 padding: 6px;
-            }
-            QTextEdit:focus {
-                border: 1px solid #2563eb;
-            }
+            }}
+            QTextEdit:focus {{
+                border: 1px solid #38bdf8;
+            }}
         """)
         layout.addWidget(self.key_input)
 
@@ -186,18 +185,18 @@ class LicenseDialog(QDialog):
 
         if not self.mandatory:
             close_btn = QPushButton("Close")
-            close_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #e2e8f0;
-                    color: #1e293b;
+            close_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {'#3f3f46' if is_dark else '#e2e8f0'};
+                    color: {input_text};
                     font-weight: bold;
                     padding: 7px 14px;
                     border-radius: 5px;
-                    border: 1px solid #cbd5e1;
-                }
-                QPushButton:hover {
-                    background-color: #cbd5e1;
-                }
+                    border: 1px solid {card_border};
+                }}
+                QPushButton:hover {{
+                    background-color: {'#52525b' if is_dark else '#cbd5e1'};
+                }}
             """)
             close_btn.clicked.connect(self.accept)
             btn_layout.addWidget(close_btn)
@@ -249,7 +248,7 @@ class LicenseDialog(QDialog):
 
 
 class FastPSTQtApp(QMainWindow):
-    """PySide6 Desktop Application for FastPST."""
+    """PySide6 Desktop Application for FastPST with Dark/Light Theme support."""
 
     def __init__(self):
         super().__init__()
@@ -261,6 +260,9 @@ class FastPSTQtApp(QMainWindow):
         self.current_folder = get_app_directory()
         self.db_path = get_database_path()
         self.db = DatabaseManager(self.db_path)
+
+        # Theme
+        self.current_theme = load_theme_preference(self.db)
 
         # State
         self.current_email_data: Optional[Dict[str, Any]] = None
@@ -280,13 +282,42 @@ class FastPSTQtApp(QMainWindow):
         self.search_timer.timeout.connect(self.execute_search)
 
         self._init_ui()
+        self._apply_theme()
         self._refresh_license_status()
 
         # Check license on startup
         QTimer.singleShot(100, self._check_startup_license)
 
+    def _apply_theme(self):
+        """Applies the current theme (Light or Dark) via QPalette and QSS."""
+        app_inst = QApplication.instance()
+        if app_inst:
+            apply_theme(app_inst, self.current_theme)
+
+        if self.current_theme == "dark":
+            self.theme_btn.setText("☀️ Light")
+            self.theme_btn.setToolTip("Switch to Outlook Light Mode")
+            self.body_view.setStyleSheet("QTextBrowser { background-color: #18181b; color: #f8fafc; border: 1px solid #3f3f46; }")
+            self.body_view.document().setDefaultStyleSheet("body { background-color: #18181b; color: #f8fafc; } * { color: #f8fafc; } a { color: #38bdf8; }")
+        else:
+            self.theme_btn.setText("🌙 Dark")
+            self.theme_btn.setToolTip("Switch to Outlook Dark Mode")
+            self.body_view.setStyleSheet("QTextBrowser { background-color: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; }")
+            self.body_view.document().setDefaultStyleSheet("body { background-color: #ffffff; color: #0f172a; } * { color: #0f172a; } a { color: #2563eb; }")
+
+        # Refresh reading pane if an email is currently loaded
+        if self.current_email_data:
+            self._render_reading_pane(self.current_email_data)
+
+    def toggle_theme(self):
+        """Toggles between Light and Dark mode."""
+        self.current_theme = "light" if self.current_theme == "dark" else "dark"
+        save_theme_preference(self.db, self.current_theme)
+        self._apply_theme()
+        self._refresh_license_status()
+
     def _init_ui(self):
-        """Builds Qt user interface with side-by-side layout, progress tracking, and license button."""
+        """Builds Qt user interface with side-by-side layout, progress tracking, and theme/license buttons."""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
@@ -295,8 +326,9 @@ class FastPSTQtApp(QMainWindow):
 
         # 1. Top Toolbar (Folder & Actions)
         top_frame = QFrame()
+        top_frame.setObjectName("TopFrame")
         top_layout = QHBoxLayout(top_frame)
-        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setContentsMargins(4, 4, 4, 4)
         top_layout.setSpacing(6)
 
         folder_lbl = QLabel("Folder:")
@@ -325,8 +357,9 @@ class FastPSTQtApp(QMainWindow):
 
         # 2. Search Bar & Filters
         search_frame = QFrame()
+        search_frame.setObjectName("SearchFrame")
         search_layout = QHBoxLayout(search_frame)
-        search_layout.setContentsMargins(0, 0, 0, 0)
+        search_layout.setContentsMargins(4, 4, 4, 4)
         search_layout.setSpacing(6)
 
         search_lbl = QLabel("🔍 Search:")
@@ -359,13 +392,6 @@ class FastPSTQtApp(QMainWindow):
 
         # 3. Enhanced Progress Panel
         self.progress_panel = QFrame()
-        self.progress_panel.setStyleSheet("""
-            QFrame#ProgressPanel {
-                background-color: #f1f5f9;
-                border: 1px solid #cbd5e1;
-                border-radius: 6px;
-            }
-        """)
         self.progress_panel.setObjectName("ProgressPanel")
         prog_layout = QVBoxLayout(self.progress_panel)
         prog_layout.setContentsMargins(10, 8, 10, 8)
@@ -373,11 +399,11 @@ class FastPSTQtApp(QMainWindow):
 
         prog_header_layout = QHBoxLayout()
         self.progress_title_lbl = QLabel("⏳ Indexing Mail Data Files...")
-        self.progress_title_lbl.setStyleSheet("font-weight: bold; color: #1e3a8a;")
+        self.progress_title_lbl.setStyleSheet("font-weight: bold;")
         prog_header_layout.addWidget(self.progress_title_lbl)
 
         self.progress_stats_lbl = QLabel("0% Complete")
-        self.progress_stats_lbl.setStyleSheet("font-weight: bold; color: #334155;")
+        self.progress_stats_lbl.setStyleSheet("font-weight: bold;")
         self.progress_stats_lbl.setAlignment(Qt.AlignRight)
         prog_header_layout.addWidget(self.progress_stats_lbl)
         prog_layout.addLayout(prog_header_layout)
@@ -387,21 +413,11 @@ class FastPSTQtApp(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setFixedHeight(12)
-        self.progress_bar.setStyleSheet("""
-            QProgressBar {
-                border: 1px solid #cbd5e1;
-                border-radius: 4px;
-                background-color: #e2e8f0;
-            }
-            QProgressBar::chunk {
-                background-color: #2563eb;
-                border-radius: 3px;
-            }
-        """)
         prog_layout.addWidget(self.progress_bar)
 
         self.progress_detail_lbl = QLabel("Scanning folder for .pst, .ost, .mbox, .eml files...")
-        self.progress_detail_lbl.setStyleSheet("color: #64748b; font-size: 11px;")
+        self.progress_detail_lbl.setObjectName("MetaSubLabel")
+        self.progress_detail_lbl.setStyleSheet("font-size: 11px;")
         prog_layout.addWidget(self.progress_detail_lbl)
 
         self.progress_panel.setVisible(False)
@@ -436,17 +452,10 @@ class FastPSTQtApp(QMainWindow):
         right_layout.setSpacing(6)
 
         # Header Info Card
-        header_card = QFrame()
-        header_card.setStyleSheet("""
-            QFrame {
-                background-color: #f8f9fa;
-                border: 1px solid #dee2e6;
-                border-radius: 6px;
-                padding: 6px;
-            }
-        """)
-        hc_layout = QVBoxLayout(header_card)
-        hc_layout.setContentsMargins(6, 6, 6, 6)
+        self.header_card = QFrame()
+        self.header_card.setObjectName("HeaderCard")
+        hc_layout = QVBoxLayout(self.header_card)
+        hc_layout.setContentsMargins(8, 8, 8, 8)
         hc_layout.setSpacing(4)
 
         self.pane_subject = QLabel("Select an email from the left list to view")
@@ -456,31 +465,28 @@ class FastPSTQtApp(QMainWindow):
 
         # Meta grid
         self.pane_from = QLabel("From: -")
-        self.pane_from.setStyleSheet("color: #333;")
+        self.pane_from.setObjectName("MetaSubLabel")
         hc_layout.addWidget(self.pane_from)
 
         self.pane_to = QLabel("To: -")
-        self.pane_to.setStyleSheet("color: #555;")
+        self.pane_to.setObjectName("MetaSubLabel")
         hc_layout.addWidget(self.pane_to)
 
         date_file_layout = QHBoxLayout()
         self.pane_date = QLabel("Date: -")
-        self.pane_date.setStyleSheet("color: #666;")
+        self.pane_date.setObjectName("MetaSubLabel")
         date_file_layout.addWidget(self.pane_date)
 
         self.pane_file = QLabel("File: -")
-        self.pane_file.setStyleSheet("color: #666;")
+        self.pane_file.setObjectName("MetaSubLabel")
         date_file_layout.addWidget(self.pane_file, alignment=Qt.AlignRight)
         hc_layout.addLayout(date_file_layout)
 
         self.pane_attachments = QLabel("")
-        self.pane_attachments.setStyleSheet(
-            "color: #0b5ed7; font-weight: bold; background-color: #e7f1ff; padding: 2px 6px; border-radius: 4px;"
-        )
         self.pane_attachments.setVisible(False)
         hc_layout.addWidget(self.pane_attachments)
 
-        right_layout.addWidget(header_card)
+        right_layout.addWidget(self.header_card)
 
         # Body text browser
         self.body_view = QTextBrowser()
@@ -508,10 +514,16 @@ class FastPSTQtApp(QMainWindow):
         splitter.addWidget(right_widget)
         splitter.setSizes([480, 670])
 
-        # 5. Bottom Status Bar with Clickable License Button
+        # 5. Bottom Status Bar with Theme Switcher and License Button
         status_bar = self.statusBar()
         self.status_lbl = QLabel("Ready")
         status_bar.addWidget(self.status_lbl, stretch=1)
+
+        # Theme Switcher Button
+        self.theme_btn = QPushButton("🌙 Dark")
+        self.theme_btn.setCursor(Qt.PointingHandCursor)
+        self.theme_btn.clicked.connect(self.toggle_theme)
+        status_bar.addPermanentWidget(self.theme_btn)
 
         # Bottom Right Clickable License Badge
         self.license_badge_btn = QPushButton("🔑 License: Checking...")
@@ -525,20 +537,19 @@ class FastPSTQtApp(QMainWindow):
     def _refresh_license_status(self) -> bool:
         """Updates the bottom right license badge styling and text."""
         saved_key = load_saved_license()
+        is_dark = self.current_theme == "dark"
+
         if not saved_key:
             self.license_badge_btn.setText("✕ License: No Key (Click to Activate)")
-            self.license_badge_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #fee2e2;
-                    color: #991b1b;
-                    border: 1px solid #f87171;
+            self.license_badge_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {'#450a0a' if is_dark else '#fee2e2'};
+                    color: {'#fca5a5' if is_dark else '#991b1b'};
+                    border: 1px solid {'#991b1b' if is_dark else '#f87171'};
                     border-radius: 4px;
                     padding: 2px 10px;
                     font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #fecaca;
-                }
+                }}
             """)
             return False
 
@@ -550,57 +561,48 @@ class FastPSTQtApp(QMainWindow):
             if days <= 7:
                 # Expiring soon (Amber)
                 self.license_badge_btn.setText(f"⚠️ License: {client} ({days}d left)")
-                self.license_badge_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #fef3c7;
-                        color: #92400e;
-                        border: 1px solid #fcd34d;
+                self.license_badge_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {'#451a03' if is_dark else '#fef3c7'};
+                        color: {'#fcd34d' if is_dark else '#92400e'};
+                        border: 1px solid {'#b45309' if is_dark else '#fcd34d'};
                         border-radius: 4px;
                         padding: 2px 10px;
                         font-weight: bold;
-                    }
-                    QPushButton:hover {
-                        background-color: #fde68a;
-                    }
+                    }}
                 """)
             else:
                 # Active (Green)
                 self.license_badge_btn.setText(f"🔑 License: {client} ({days} days left)")
-                self.license_badge_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #dcfce7;
-                        color: #166534;
-                        border: 1px solid #86efac;
+                self.license_badge_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {'#052e16' if is_dark else '#dcfce7'};
+                        color: {'#86efac' if is_dark else '#166534'};
+                        border: 1px solid {'#16a34a' if is_dark else '#86efac'};
                         border-radius: 4px;
                         padding: 2px 10px;
                         font-weight: bold;
-                    }
-                    QPushButton:hover {
-                        background-color: #bbf7d0;
-                    }
+                    }}
                 """)
             return True
         else:
             # Expired / Tampered (Red)
             self.license_badge_btn.setText("✕ License: Expired (Click to Renew)")
-            self.license_badge_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #fee2e2;
-                    color: #991b1b;
-                    border: 1px solid #f87171;
+            self.license_badge_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {'#450a0a' if is_dark else '#fee2e2'};
+                    color: {'#fca5a5' if is_dark else '#991b1b'};
+                    border: 1px solid {'#991b1b' if is_dark else '#f87171'};
                     border-radius: 4px;
                     padding: 2px 10px;
                     font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #fecaca;
-                }
+                }}
             """)
             return False
 
     def open_license_dialog(self):
         """Opens the License & Activation window."""
-        dialog = LicenseDialog(self, db_manager=self.db, mandatory=False)
+        dialog = LicenseDialog(self, db_manager=self.db, mandatory=False, theme=self.current_theme)
         dialog.exec()
         self._refresh_license_status()
 
@@ -608,7 +610,7 @@ class FastPSTQtApp(QMainWindow):
         """Validates license on application startup; prompts for activation if required."""
         is_licensed = self._refresh_license_status()
         if not is_licensed:
-            dialog = LicenseDialog(self, db_manager=self.db, mandatory=True)
+            dialog = LicenseDialog(self, db_manager=self.db, mandatory=True, theme=self.current_theme)
             if dialog.exec() != QDialog.Accepted or not self._refresh_license_status():
                 QMessageBox.critical(
                     self, "Activation Required",
@@ -692,6 +694,7 @@ class FastPSTQtApp(QMainWindow):
         date_sent = email_data.get("date_sent") or "-"
         file_name = email_data.get("file_name") or "-"
         attachments = email_data.get("attachments") or []
+        is_dark = self.current_theme == "dark"
 
         self.pane_subject.setText(subject)
         self.pane_from.setText(f"From: {sender}")
@@ -702,6 +705,11 @@ class FastPSTQtApp(QMainWindow):
         if attachments:
             att_names = ", ".join([a.get("name", "attachment") for a in attachments])
             self.pane_attachments.setText(f"📎 Attachments ({len(attachments)}): {att_names}")
+            att_bg = "rgba(56, 189, 248, 0.15)" if is_dark else "rgba(2, 132, 199, 0.15)"
+            att_color = "#38bdf8" if is_dark else "#0284c7"
+            self.pane_attachments.setStyleSheet(
+                f"color: {att_color}; font-weight: bold; background-color: {att_bg}; padding: 3px 8px; border-radius: 4px;"
+            )
             self.pane_attachments.setVisible(True)
         else:
             self.pane_attachments.setVisible(False)
@@ -709,12 +717,8 @@ class FastPSTQtApp(QMainWindow):
         html_body = email_data.get("html_body")
         plain_body = email_data.get("plain_body")
 
-        if html_body and html_body.strip():
-            self.body_view.setHtml(html_body)
-        elif plain_body and plain_body.strip():
-            self.body_view.setPlainText(plain_body)
-        else:
-            self.body_view.setPlainText("(This message has no body content)")
+        rendered_html = format_email_body_html(html_body, plain_body, is_dark)
+        self.body_view.setHtml(rendered_html)
 
         self.open_app_btn.setEnabled(True)
         self.save_eml_btn.setEnabled(True)
@@ -912,10 +916,14 @@ class FastPSTQtApp(QMainWindow):
 
 
 def launch_app_qt():
-    """Entry point for PySide6 application."""
+    """Entry point for PySide6 application with Fusion style enforcement."""
     app = QApplication.instance()
     if app is None:
         app = QApplication(sys.argv)
+    
+    # Enforce standard cross-platform Fusion engine to eliminate OS theme glitches
+    app.setStyle("Fusion")
+    
     window = FastPSTQtApp()
     window.show()
     sys.exit(app.exec())

@@ -273,11 +273,29 @@ class FastPSTApp:
         )
         self.license_btn.pack(side=tk.RIGHT, padx=6)
 
+        self.theme_btn = tk.Button(
+            status_frame,
+            text="🌙 Dark",
+            font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 9),
+            relief="groove",
+            cursor="hand2",
+            command=self.toggle_theme
+        )
+        self.theme_btn.pack(side=tk.RIGHT, padx=4)
+
         self.progress_percent_label = ttk.Label(status_frame, text="", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 9, "bold"))
         self.progress_percent_label.pack(side=tk.RIGHT, padx=(4, 8))
 
-        self.progress_bar = ttk.Progressbar(status_frame, mode="determinate", maximum=100, length=180)
+        self.progress_bar = ttk.Progressbar(status_frame, mode="determinate", maximum=100, length=160)
         self.progress_bar.pack(side=tk.RIGHT, padx=4)
+
+    def toggle_theme(self):
+        """Toggles between light and dark button indication in Tkinter."""
+        curr = self.theme_btn.cget("text")
+        if "Dark" in curr:
+            self.theme_btn.config(text="☀️ Light")
+        else:
+            self.theme_btn.config(text="🌙 Dark")
 
     # --- Licensing Management ---
 
