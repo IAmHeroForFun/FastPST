@@ -47,6 +47,14 @@ class DatabaseManager:
                     );
                 """)
 
+                # 1b. System state table (for high-water mark timestamp anti-tamper)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS system_state (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    );
+                """)
+
                 # 2. Emails table
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS emails (
@@ -355,6 +363,31 @@ class DatabaseManager:
                 "total_files": total_files,
                 "db_size": os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0
             }
+        finally:
+            conn.close()
+
+    def record_clock_seen(self, timestamp: float):
+        """Records current timestamp for anti-clock-rollback tracking."""
+        conn = self.get_connection()
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO system_state (key, value) VALUES ('last_clock', ?)",
+                    (str(timestamp),),
+                )
+        finally:
+            conn.close()
+
+    def get_last_clock_seen(self) -> float:
+        """Returns the highest recorded system timestamp."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM system_state WHERE key = 'last_clock'")
+            row = cursor.fetchone()
+            if row and row["value"]:
+                return float(row["value"])
+            return 0.0
         finally:
             conn.close()
 

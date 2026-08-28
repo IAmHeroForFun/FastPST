@@ -1,7 +1,7 @@
 """
 FastPST - PySide6 (Qt) Desktop Application
 Provides high-performance email browsing, reading pane, search, and mail client redirection.
-Used automatically when Tkinter shared libraries are not present on the Linux host.
+Includes offline cryptographic license verification and bottom status bar indicator.
 """
 
 import os
@@ -15,8 +15,8 @@ from PySide6.QtCore import Qt, Signal, QObject, QTimer
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QLabel, QTableWidget, QTableWidgetItem,
-    QHeaderView, QSplitter, QTextBrowser, QComboBox, QCheckBox,
-    QProgressBar, QFileDialog, QMessageBox, QFrame
+    QHeaderView, QSplitter, QTextBrowser, QTextEdit, QComboBox, QCheckBox,
+    QProgressBar, QFileDialog, QMessageBox, QFrame, QDialog
 )
 from PySide6.QtGui import QFont, QIcon
 
@@ -26,16 +26,149 @@ from fastpst.parser import PSTParser, PYPFF_AVAILABLE, get_mail_parser
 from fastpst.db import DatabaseManager
 from fastpst.exporter import EmailExporter, cleanup_temp_files
 from fastpst.launcher import MailLauncher
+from fastpst.license import verify_license_token, save_license, load_saved_license
 
 logger = logging.getLogger("fastpst.app_qt")
 
 
 class WorkerSignals(QObject):
     status_updated = Signal(str)
-    progress_updated = Signal(int, int, str, float, int, int)  # (file_idx, total_files, filename, size_mb, count, percent)
+    progress_updated = Signal(int, int, str, float, int, int)
     no_files_found = Signal(str)
     error_dialog = Signal(str)
-    indexing_complete = Signal(int, float)  # (total_emails, elapsed_sec)
+    indexing_complete = Signal(int, float)
+
+
+class LicenseActivationDialog(QDialog):
+    """Modal dialog for viewing license status and activating/renewing offline keys."""
+
+    def __init__(self, parent=None, db_manager=None, mandatory: bool = False):
+        super().__init__(parent)
+        self.db = db_manager
+        self.mandatory = mandatory
+        self.license_activated = False
+
+        self.setWindowTitle("FastPST - License & Activation")
+        self.resize(500, 360)
+        self.setModal(True)
+        self._init_ui()
+        self._check_current_license()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        # Title / Info Banner
+        header_lbl = QLabel("🔑 FastPST License Details")
+        header_lbl.setFont(QFont("sans-serif", 13, QFont.Bold))
+        layout.addWidget(header_lbl)
+
+        # Info Box
+        self.info_card = QFrame()
+        self.info_card.setStyleSheet("""
+            QFrame {
+                background-color: #f8fafc;
+                border: 1px solid #cbd5e1;
+                border-radius: 6px;
+                padding: 8px;
+            }
+        """)
+        card_layout = QVBoxLayout(self.info_card)
+        card_layout.setSpacing(4)
+
+        self.status_lbl = QLabel("Status: Checking...")
+        self.status_lbl.setFont(QFont("sans-serif", 10, QFont.Bold))
+        card_layout.addWidget(self.status_lbl)
+
+        self.client_lbl = QLabel("Licensed To: -")
+        card_layout.addWidget(self.client_lbl)
+
+        self.expiry_lbl = QLabel("Expires: -")
+        card_layout.addWidget(self.expiry_lbl)
+
+        layout.addWidget(self.info_card)
+
+        # Key Input section
+        key_lbl = QLabel("Enter / Paste License Key:")
+        key_lbl.setFont(QFont("sans-serif", 10, QFont.Bold))
+        layout.addWidget(key_lbl)
+
+        self.key_input = QTextEdit()
+        self.key_input.setPlaceholderText("Paste your FPST-... license key here")
+        self.key_input.setFixedHeight(75)
+        self.key_input.setFont(QFont("Monospace", 9))
+        layout.addWidget(self.key_input)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(8)
+
+        self.activate_btn = QPushButton("💾 Activate License")
+        self.activate_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2563eb;
+                color: white;
+                font-weight: bold;
+                padding: 6px 14px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #1d4ed8;
+            }
+        """)
+        self.activate_btn.clicked.connect(self._on_activate_clicked)
+        btn_layout.addWidget(self.activate_btn)
+
+        if not self.mandatory:
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(self.accept)
+            btn_layout.addWidget(close_btn)
+
+        layout.addLayout(btn_layout)
+
+    def _check_current_license(self):
+        saved_key = load_saved_license()
+        if saved_key:
+            is_valid, msg, details = verify_license_token(saved_key, db_manager=self.db)
+            if is_valid:
+                days = details.get("days_remaining", 0)
+                client = details.get("client", "Valued Customer")
+                expiry = details.get("expiry", "-")
+                self.status_lbl.setText(f"Status: ✓ Active ({days} day{'s' if days != 1 else ''} remaining)")
+                self.status_lbl.setStyleSheet("color: #16a34a; font-weight: bold;")
+                self.client_lbl.setText(f"Licensed To: {client}")
+                self.expiry_lbl.setText(f"Expiration Date: {expiry}")
+                return
+            else:
+                self.status_lbl.setText(f"Status: ✕ {msg}")
+                self.status_lbl.setStyleSheet("color: #dc2626; font-weight: bold;")
+                self.client_lbl.setText(f"Licensed To: {details.get('client', '-')}")
+                self.expiry_lbl.setText(f"Expiration Date: {details.get('expiry', '-')}")
+                return
+
+        self.status_lbl.setText("Status: ✕ No active license found")
+        self.status_lbl.setStyleSheet("color: #dc2626; font-weight: bold;")
+
+    def _on_activate_clicked(self):
+        raw_key = self.key_input.toPlainText().strip()
+        if not raw_key:
+            QMessageBox.warning(self, "Invalid Key", "Please paste a license key.")
+            return
+
+        is_valid, msg, details = verify_license_token(raw_key, db_manager=self.db)
+        if is_valid:
+            save_license(raw_key)
+            self.license_activated = True
+            days = details.get("days_remaining", 0)
+            client = details.get("client", "Customer")
+            QMessageBox.information(
+                self, "License Activated",
+                f"License successfully activated for {client}!\n\nValid for {days} days (Expires: {details.get('expiry')})."
+            )
+            self.accept()
+        else:
+            QMessageBox.critical(self, "Activation Failed", f"License verification failed:\n\n{msg}")
 
 
 class FastPSTQtApp(QMainWindow):
@@ -70,12 +203,13 @@ class FastPSTQtApp(QMainWindow):
         self.search_timer.timeout.connect(self.execute_search)
 
         self._init_ui()
+        self._refresh_license_status()
 
-        # Auto-scan folder on startup
-        QTimer.singleShot(300, self.auto_start_scan)
+        # Check license on startup
+        QTimer.singleShot(100, self._check_startup_license)
 
     def _init_ui(self):
-        """Builds Qt user interface with side-by-side layout and live progress tracking."""
+        """Builds Qt user interface with side-by-side layout, progress tracking, and license badge."""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
@@ -146,7 +280,7 @@ class FastPSTQtApp(QMainWindow):
 
         main_layout.addWidget(search_frame)
 
-        # 3. Enhanced Progress Panel (Visible during scanning & indexing)
+        # 3. Enhanced Progress Panel
         self.progress_panel = QFrame()
         self.progress_panel.setStyleSheet("""
             QFrame#ProgressPanel {
@@ -297,10 +431,116 @@ class FastPSTQtApp(QMainWindow):
         splitter.addWidget(right_widget)
         splitter.setSizes([480, 670])
 
-        # 5. Bottom Status Bar
+        # 5. Bottom Status Bar with Clickable License Badge
         status_bar = self.statusBar()
         self.status_lbl = QLabel("Ready")
         status_bar.addWidget(self.status_lbl, stretch=1)
+
+        # Bottom Right Clickable License Badge
+        self.license_badge_btn = QPushButton("🔑 License: Checking...")
+        self.license_badge_btn.setCursor(Qt.PointingHandCursor)
+        self.license_badge_btn.setToolTip("Click to view license details or enter a new license key")
+        self.license_badge_btn.clicked.connect(self.open_license_dialog)
+        status_bar.addPermanentWidget(self.license_badge_btn)
+
+    # --- Licensing Management ---
+
+    def _refresh_license_status(self) -> bool:
+        """Updates the bottom right license badge styling and text."""
+        saved_key = load_saved_license()
+        if not saved_key:
+            self.license_badge_btn.setText("🔑 No License (Click to Activate)")
+            self.license_badge_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #fee2e2;
+                    color: #991b1b;
+                    border: 1px solid #f87171;
+                    border-radius: 4px;
+                    padding: 2px 8px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #fecaca;
+                }
+            """)
+            return False
+
+        is_valid, msg, details = verify_license_token(saved_key, db_manager=self.db)
+        days = details.get("days_remaining", 0)
+        client = details.get("client", "Customer")
+
+        if is_valid:
+            if days <= 7:
+                # Expiring soon (Amber)
+                self.license_badge_btn.setText(f"⚠️ License: {client} ({days}d left)")
+                self.license_badge_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #fef3c7;
+                        color: #92400e;
+                        border: 1px solid #fcd34d;
+                        border-radius: 4px;
+                        padding: 2px 8px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background-color: #fde68a;
+                    }
+                """)
+            else:
+                # Active (Green)
+                self.license_badge_btn.setText(f"🔑 License: {client} ({days} days left)")
+                self.license_badge_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #dcfce7;
+                        color: #166534;
+                        border: 1px solid #86efac;
+                        border-radius: 4px;
+                        padding: 2px 8px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background-color: #bbf7d0;
+                    }
+                """)
+            return True
+        else:
+            # Expired / Tampered (Red)
+            self.license_badge_btn.setText("✕ License Expired (Click to Renew)")
+            self.license_badge_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #fee2e2;
+                    color: #991b1b;
+                    border: 1px solid #f87171;
+                    border-radius: 4px;
+                    padding: 2px 8px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #fecaca;
+                }
+            """)
+            return False
+
+    def open_license_dialog(self):
+        """Opens the license details / key entry dialog."""
+        dialog = LicenseActivationDialog(self, db_manager=self.db, mandatory=False)
+        dialog.exec()
+        self._refresh_license_status()
+
+    def _check_startup_license(self):
+        """Validates license on application startup; prompts for activation if required."""
+        is_licensed = self._refresh_license_status()
+        if not is_licensed:
+            dialog = LicenseActivationDialog(self, db_manager=self.db, mandatory=True)
+            if dialog.exec() != QDialog.Accepted or not self._refresh_license_status():
+                QMessageBox.critical(
+                    self, "Activation Required",
+                    "A valid license key is required to use FastPST.\nClosing application."
+                )
+                sys.exit(0)
+
+        # If licensed, proceed to auto-scan
+        self.auto_start_scan()
 
     # --- Search & Table Population ---
 
@@ -354,7 +594,6 @@ class FastPSTQtApp(QMainWindow):
         if not selected_items:
             return
 
-        # Fetch ID from the first column of the selected row
         row = selected_items[0].row()
         item = self.table.item(row, 0)
         if not item:
@@ -390,7 +629,6 @@ class FastPSTQtApp(QMainWindow):
         else:
             self.pane_attachments.setVisible(False)
 
-        # Display body
         html_body = email_data.get("html_body")
         plain_body = email_data.get("plain_body")
 
@@ -495,12 +733,10 @@ class FastPSTQtApp(QMainWindow):
                 filename = f_info["filename"]
                 size_mb = file_size / (1024 * 1024)
 
-                # Base percentage for the start of this file
                 base_pct = int(((f_idx - 1) / total_files) * 100)
                 file_weight = 100.0 / total_files
 
                 if not force_reindex and self.db.is_file_indexed_and_current(file_path, file_size, mtime):
-                    # Already indexed
                     pct = int((f_idx / total_files) * 100)
                     self.signals.progress_updated.emit(f_idx, total_files, filename, size_mb, 0, pct)
                     continue
@@ -528,7 +764,6 @@ class FastPSTQtApp(QMainWindow):
                             if len(batch) >= 50:
                                 self.db.insert_emails_batch(batch)
                                 batch.clear()
-                                # Estimate internal progress
                                 curr_pct = min(99, int(base_pct + (file_weight * 0.8)))
                                 self.signals.progress_updated.emit(f_idx, total_files, filename, size_mb, count, curr_pct)
 
@@ -539,7 +774,6 @@ class FastPSTQtApp(QMainWindow):
                     self.db.record_file_indexed(file_path, file_size, mtime, count)
                     total_new_indexed += count
 
-                    # Completed this file
                     file_done_pct = int((f_idx / total_files) * 100)
                     self.signals.progress_updated.emit(f_idx, total_files, filename, size_mb, count, file_done_pct)
 
@@ -592,9 +826,7 @@ class FastPSTQtApp(QMainWindow):
         self.status_lbl.setText(summary)
         self.count_badge.setText(f"{total_in_db:,} Emails Loaded")
 
-        # Hide progress card after 4 seconds of displaying completion
         QTimer.singleShot(4000, lambda: self.progress_panel.setVisible(False) if not self.is_indexing else None)
-
         self.execute_search()
 
     def closeEvent(self, event):

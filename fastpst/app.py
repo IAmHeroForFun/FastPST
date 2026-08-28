@@ -20,6 +20,7 @@ from fastpst.parser import PSTParser, PYPFF_AVAILABLE, get_mail_parser
 from fastpst.db import DatabaseManager
 from fastpst.exporter import EmailExporter
 from fastpst.launcher import MailLauncher
+from fastpst.license import verify_license_token, save_license, load_saved_license
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("fastpst.app")
@@ -60,8 +61,9 @@ class FastPSTApp:
         # Process periodic queue events
         self.root.after(100, self._process_queue)
 
-        # Auto-scan directory on startup
-        self.root.after(300, self.auto_start_scan)
+        # License status and auto-scan on startup
+        self._refresh_license_status()
+        self.root.after(100, self._check_startup_license)
 
     def _setup_styles(self):
         """Sets up ttk themes and visual styles."""
@@ -261,11 +263,157 @@ class FastPSTApp:
         self.status_label = ttk.Label(status_frame, text="Ready", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 9))
         self.status_label.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
 
+        self.license_btn = tk.Button(
+            status_frame,
+            text="🔑 License: Checking...",
+            font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 9, "bold"),
+            relief="groove",
+            cursor="hand2",
+            command=self.open_license_dialog
+        )
+        self.license_btn.pack(side=tk.RIGHT, padx=6)
+
         self.progress_percent_label = ttk.Label(status_frame, text="", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 9, "bold"))
         self.progress_percent_label.pack(side=tk.RIGHT, padx=(4, 8))
 
-        self.progress_bar = ttk.Progressbar(status_frame, mode="determinate", maximum=100, length=220)
+        self.progress_bar = ttk.Progressbar(status_frame, mode="determinate", maximum=100, length=180)
         self.progress_bar.pack(side=tk.RIGHT, padx=4)
+
+    # --- Licensing Management ---
+
+    def _refresh_license_status(self) -> bool:
+        """Updates the bottom right license badge styling and text."""
+        saved_key = load_saved_license()
+        if not saved_key:
+            self.license_btn.config(
+                text="🔑 No License (Click to Activate)",
+                bg="#fee2e2",
+                fg="#991b1b"
+            )
+            return False
+
+        is_valid, msg, details = verify_license_token(saved_key, db_manager=self.db)
+        days = details.get("days_remaining", 0)
+        client = details.get("client", "Customer")
+
+        if is_valid:
+            if days <= 7:
+                self.license_btn.config(
+                    text=f"⚠️ License: {client} ({days}d left)",
+                    bg="#fef3c7",
+                    fg="#92400e"
+                )
+            else:
+                self.license_btn.config(
+                    text=f"🔑 License: {client} ({days} days left)",
+                    bg="#dcfce7",
+                    fg="#166534"
+                )
+            return True
+        else:
+            self.license_btn.config(
+                text="✕ License Expired (Click to Renew)",
+                bg="#fee2e2",
+                fg="#991b1b"
+            )
+            return False
+
+    def open_license_dialog(self, mandatory: bool = False):
+        """Opens the license details / key activation window."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("FastPST - License & Activation")
+        dlg.geometry("500x360")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        # Header
+        ttk.Label(dlg, text="🔑 FastPST License Details", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 12, "bold")).pack(pady=(12, 6))
+
+        # Status Card
+        info_frame = ttk.LabelFrame(dlg, text=" Current License Status ", padding="10")
+        info_frame.pack(fill=tk.X, padx=16, pady=6)
+
+        status_lbl = ttk.Label(info_frame, text="Status: Checking...", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 10, "bold"))
+        status_lbl.pack(anchor="w", pady=2)
+
+        client_lbl = ttk.Label(info_frame, text="Licensed To: -")
+        client_lbl.pack(anchor="w", pady=1)
+
+        expiry_lbl = ttk.Label(info_frame, text="Expires: -")
+        expiry_lbl.pack(anchor="w", pady=1)
+
+        # Check existing key
+        saved_key = load_saved_license()
+        if saved_key:
+            is_valid, msg, details = verify_license_token(saved_key, db_manager=self.db)
+            if is_valid:
+                days = details.get("days_remaining", 0)
+                status_lbl.config(text=f"Status: ✓ Active ({days} day{'s' if days != 1 else ''} remaining)", foreground="#16a34a")
+                client_lbl.config(text=f"Licensed To: {details.get('client', '-')}")
+                expiry_lbl.config(text=f"Expiration Date: {details.get('expiry', '-')}")
+            else:
+                status_lbl.config(text=f"Status: ✕ {msg}", foreground="#dc2626")
+                client_lbl.config(text=f"Licensed To: {details.get('client', '-')}")
+                expiry_lbl.config(text=f"Expiration Date: {details.get('expiry', '-')}")
+        else:
+            status_lbl.config(text="Status: ✕ No active license found", foreground="#dc2626")
+
+        # Input Frame
+        input_frame = ttk.Frame(dlg, padding="16 6 16 6")
+        input_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(input_frame, text="Enter / Paste License Key:", font=("Segoe UI" if sys.platform == "win32" else "Helvetica", 9, "bold")).pack(anchor="w", pady=(0, 4))
+        key_entry = scrolledtext.ScrolledText(input_frame, height=4, font=("Consolas" if sys.platform == "win32" else "Monospace", 9))
+        key_entry.pack(fill=tk.BOTH, expand=True)
+
+        # Buttons
+        btn_frame = ttk.Frame(dlg, padding="16 8 16 12")
+        btn_frame.pack(fill=tk.X)
+
+        def do_activate():
+            raw_key = key_entry.get("1.0", tk.END).strip()
+            if not raw_key:
+                messagebox.showwarning("Invalid Key", "Please paste a license key.", parent=dlg)
+                return
+
+            is_valid_k, msg_k, details_k = verify_license_token(raw_key, db_manager=self.db)
+            if is_valid_k:
+                save_license(raw_key)
+                self._refresh_license_status()
+                days_k = details_k.get("days_remaining", 0)
+                client_k = details_k.get("client", "Customer")
+                messagebox.showinfo(
+                    "License Activated",
+                    f"License successfully activated for {client_k}!\n\nValid for {days_k} days (Expires: {details_k.get('expiry')}).",
+                    parent=dlg
+                )
+                dlg.destroy()
+            else:
+                messagebox.showerror("Activation Failed", f"License verification failed:\n\n{msg_k}", parent=dlg)
+
+        activate_btn = ttk.Button(btn_frame, text="💾 Activate License", command=do_activate)
+        activate_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        if not mandatory:
+            close_btn = ttk.Button(btn_frame, text="Close", command=dlg.destroy)
+            close_btn.pack(side=tk.LEFT)
+        else:
+            dlg.protocol("WM_DELETE_WINDOW", lambda: sys.exit(0))
+
+        dlg.wait_window()
+
+    def _check_startup_license(self):
+        """Validates license on application startup; prompts for activation if required."""
+        is_licensed = self._refresh_license_status()
+        if not is_licensed:
+            self.open_license_dialog(mandatory=True)
+            if not self._refresh_license_status():
+                messagebox.showerror("Activation Required", "A valid license key is required to use FastPST.")
+                self.root.destroy()
+                return
+
+        # If licensed, auto-scan folder
+        self.auto_start_scan()
 
     # --- Data & Event Handling ---
 
