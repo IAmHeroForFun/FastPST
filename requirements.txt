@@ -1,4 +1,5 @@
 # FastPST Dependencies
+libpff-python==20211114; sys_platform == 'win32'
 libpff-python>=20211114; sys_platform == 'linux' or sys_platform == 'darwin'
 PySide6>=6.5.0
 pyinstaller>=5.0

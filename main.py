@@ -1,11 +1,13 @@
 """
 FastPST - Main Application Entry Point
-Automatically chooses the best available GUI engine (Tkinter or PySide6 Qt).
+Prioritizes the modern Outlook 3-pane PySide6 Qt interface,
+with automatic fallback to Tkinter.
 """
 
 import sys
 import os
 import logging
+import traceback
 
 # Suppress harmless Qt compose diagnostic notices on Linux
 os.environ.setdefault("QT_LOGGING_RULES", "qt.xkb.compose=false;qt.qpa.*=false")
@@ -28,26 +30,32 @@ def show_error_dialog(title: str, message: str):
 
 
 def main():
-    # 1. Try Tkinter first (Standard on Windows)
-    try:
-        from fastpst.app import launch_app as launch_tk
-        launch_tk()
-        return
-    except Exception as e:
-        logger.debug(f"Tkinter unavailable ({e}), falling back to PySide6...")
+    qt_error = None
+    tk_error = None
 
-    # 2. Fall back to PySide6 Qt (Standard on Linux)
+    # 1. Try PySide6 Qt first (Primary modern 3-pane Outlook GUI)
     try:
         from fastpst.app_qt import launch_app_qt
         launch_app_qt()
         return
     except Exception as e:
-        logger.debug(f"PySide6 Qt unavailable ({e})")
+        qt_error = traceback.format_exc()
+        logger.debug(f"PySide6 Qt unavailable: {e}")
 
-    # If neither GUI is available, show a visible error alert
+    # 2. Fall back to Tkinter
+    try:
+        from fastpst.app import launch_app as launch_tk
+        launch_tk()
+        return
+    except Exception as e:
+        tk_error = traceback.format_exc()
+        logger.debug(f"Tkinter unavailable: {e}")
+
+    # If neither GUI is available, show a detailed error alert
     err_msg = (
-        "FastPST could not initialize any GUI engine.\n\n"
-        "Please run 'pip install PySide6' or configure Tkinter."
+        "FastPST could not initialize the GUI engine.\n\n"
+        f"PySide6 error:\n{qt_error}\n\n"
+        f"Tkinter error:\n{tk_error}"
     )
     show_error_dialog("FastPST Startup Error", err_msg)
     sys.exit(1)

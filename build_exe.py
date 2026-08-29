@@ -1,6 +1,7 @@
 """
 FastPST - Windows Executable Build Script
-Uses PyInstaller to build a standalone, windowed (no console) FastPST.exe.
+Uses PyInstaller to build a standalone, windowed (no console) FastPST.exe
+with 100% bundled dependencies (PySide6, pypff, SQLite3).
 """
 
 import os
@@ -19,7 +20,7 @@ def build_windows_exe():
         print(f"[OK] PyInstaller {PyInstaller.__version__} detected.")
     except ImportError:
         print("[!] PyInstaller is not installed. Installing via pip...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller>=5.0"])
 
     project_root = os.path.dirname(os.path.abspath(__file__))
     main_script = os.path.join(project_root, "main.py")
@@ -33,18 +34,37 @@ def build_windows_exe():
         "--windowed",
         "--noconsole",
         f"--add-data=fastpst{os.pathsep}fastpst",
+        "--collect-all=PySide6",
+        "--collect-all=fastpst",
         "--hidden-import=sqlite3",
         "--hidden-import=pypff",
         "--hidden-import=libpff",
         "--hidden-import=email",
-        "--hidden-import=tkinter",
+        "--hidden-import=email.message",
+        "--hidden-import=email.policy",
+        "--hidden-import=email.parser",
+        "--hidden-import=mailbox",
         "--hidden-import=PySide6",
         "--hidden-import=PySide6.QtWidgets",
         "--hidden-import=PySide6.QtCore",
         "--hidden-import=PySide6.QtGui",
         "--clean",
-        main_script,
     ]
+
+    # Check if pypff is installed and collect all its C DLLs/.pyd
+    try:
+        import pypff
+        cmd.append("--collect-all=pypff")
+        print("[OK] pypff C-library detected — packaging into .exe via --collect-all=pypff")
+    except ImportError:
+        try:
+            import libpff
+            cmd.append("--collect-all=libpff")
+            print("[OK] libpff C-library detected — packaging into .exe via --collect-all=libpff")
+        except ImportError:
+            print("[!] Warning: pypff/libpff is not installed in the build environment.")
+
+    cmd.append(main_script)
 
     print("\nExecuting PyInstaller command:")
     print(" ".join(cmd))
@@ -54,10 +74,9 @@ def build_windows_exe():
     if result.returncode == 0:
         dist_exe = os.path.join(project_root, "dist", "FastPST.exe" if sys.platform == "win32" else "FastPST")
         print("\n" + "=" * 60)
-        print("[SUCCESS] Executable successfully created!")
+        print("[SUCCESS] Standalone Executable successfully created!")
         print(f"Location: {dist_exe}")
-        print("You can now copy FastPST.exe into any folder containing .pst/.ost files")
-        print("and double-click it to run.")
+        print("You can now copy FastPST.exe into any client folder or PC without installing Python.")
         print("=" * 60)
     else:
         print(f"\n[ERROR] PyInstaller build failed with exit code {result.returncode}")
