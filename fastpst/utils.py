@@ -46,3 +46,10 @@ def get_temp_directory() -> str:
     temp_dir = os.path.join(tempfile.gettempdir(), "FastPST_Temp")
     os.makedirs(temp_dir, exist_ok=True)
     return temp_dir
+
+
+def cleanup_temp_files():
+    """Cleanup temporary files created by FastPST."""
+    from fastpst.exporter import cleanup_temp_files as _clean
+    _clean()
+

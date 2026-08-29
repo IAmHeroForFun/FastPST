@@ -5,7 +5,7 @@ Discovers Outlook data files (.pst and .ost) using os and glob.
 
 import os
 import glob
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import logging
 
 logger = logging.getLogger("fastpst.scanner")

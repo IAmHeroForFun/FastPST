@@ -1,6 +1,6 @@
 """
-FastPST - Windows Executable Build Script
-Uses PyInstaller to build a standalone, windowed (no console) FastPST.exe
+FastPST - Executable Build Script
+Uses PyInstaller to build a standalone, optimized FastPST executable
 with 100% bundled dependencies (PySide6, pypff, SQLite3).
 """
 
@@ -12,7 +12,7 @@ import traceback
 
 def build_windows_exe():
     print("=" * 60)
-    print("FastPST - Building Standalone Windows Executable (.exe)")
+    print("FastPST - Building Standalone Optimized Executable")
     print("=" * 60)
 
     # Check PyInstaller
@@ -35,7 +35,6 @@ def build_windows_exe():
         "--windowed",
         "--noconsole",
         f"--add-data=fastpst{os.pathsep}fastpst",
-        "--collect-all=PySide6",
         "--collect-all=fastpst",
         "--hidden-import=sqlite3",
         "--hidden-import=pypff",
@@ -49,21 +48,46 @@ def build_windows_exe():
         "--hidden-import=PySide6.QtWidgets",
         "--hidden-import=PySide6.QtCore",
         "--hidden-import=PySide6.QtGui",
+        # Exclude unused 3D, sensor, and gaming modules to reduce binary size and eliminate build warnings
+        "--exclude-module=PySide6.Qt3DCore",
+        "--exclude-module=PySide6.Qt3DRender",
+        "--exclude-module=PySide6.Qt3DInput",
+        "--exclude-module=PySide6.Qt3DLogic",
+        "--exclude-module=PySide6.Qt3DExtras",
+        "--exclude-module=PySide6.Qt3DAnimation",
+        "--exclude-module=PySide6.QtBluetooth",
+        "--exclude-module=PySide6.QtSensors",
+        "--exclude-module=PySide6.QtSerialPort",
+        "--exclude-module=PySide6.QtSerialBus",
+        "--exclude-module=PySide6.QtWebSockets",
+        "--exclude-module=PySide6.QtWebView",
+        "--exclude-module=PySide6.QtHttpServer",
+        "--exclude-module=PySide6.QtLocation",
+        "--exclude-module=PySide6.QtNfc",
+        "--exclude-module=PySide6.QtRemoteObjects",
+        "--exclude-module=PySide6.QtScxml",
+        "--exclude-module=PySide6.QtCharts",
+        "--exclude-module=PySide6.QtDataVisualization",
+        "--exclude-module=PySide6.QtGraphs",
+        "--exclude-module=PySide6.QtGraphsWidgets",
+        "--exclude-module=PySide6.QtQuick3D",
+        "--exclude-module=PySide6.QtSpatialAudio",
+        "--exclude-module=PySide6.QtNetworkAuth",
         "--clean",
     ]
 
-    # Check if pypff is installed and collect all its C DLLs/.pyd
+    # Check if pypff is installed
     try:
         import pypff
-        cmd.append("--collect-all=pypff")
-        print("[OK] pypff C-library detected — packaging into .exe via --collect-all=pypff")
+        cmd.extend(["--hidden-import=pypff", "--hidden-import=libpff"])
+        print("[OK] pypff C-library detected — bundled into binary.")
     except ImportError:
         try:
             import libpff
-            cmd.append("--collect-all=libpff")
-            print("[OK] libpff C-library detected — packaging into .exe via --collect-all=libpff")
+            cmd.extend(["--hidden-import=libpff"])
+            print("[OK] libpff C-library detected — bundled into binary.")
         except ImportError:
-            print("[!] Warning: pypff/libpff is not installed in the build environment.")
+            print("[!] Note: pypff/libpff C-extension not detected in current environment.")
 
     cmd.append(main_script)
 
@@ -77,7 +101,7 @@ def build_windows_exe():
         print("\n" + "=" * 60)
         print("[SUCCESS] Standalone Executable successfully created!")
         print(f"Location: {dist_exe}")
-        print("You can now copy FastPST.exe into any client folder or PC without installing Python.")
+        print("You can now copy FastPST into any client folder or PC without installing Python.")
         print("=" * 60)
     else:
         print(f"\n[ERROR] PyInstaller build failed with exit code {result.returncode}")

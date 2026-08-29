@@ -3,12 +3,8 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [('fastpst', 'fastpst')]
 binaries = []
-hiddenimports = ['sqlite3', 'pypff', 'libpff', 'email', 'email.message', 'email.policy', 'email.parser', 'mailbox', 'PySide6', 'PySide6.QtWidgets', 'PySide6.QtCore', 'PySide6.QtGui']
-tmp_ret = collect_all('PySide6')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+hiddenimports = ['sqlite3', 'pypff', 'libpff', 'email', 'email.message', 'email.policy', 'email.parser', 'mailbox', 'PySide6', 'PySide6.QtWidgets', 'PySide6.QtCore', 'PySide6.QtGui', 'pypff', 'libpff']
 tmp_ret = collect_all('fastpst')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('pypff')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
@@ -21,7 +17,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['PySide6.Qt3DCore', 'PySide6.Qt3DRender', 'PySide6.Qt3DInput', 'PySide6.Qt3DLogic', 'PySide6.Qt3DExtras', 'PySide6.Qt3DAnimation', 'PySide6.QtBluetooth', 'PySide6.QtSensors', 'PySide6.QtSerialPort', 'PySide6.QtSerialBus', 'PySide6.QtWebSockets', 'PySide6.QtWebView', 'PySide6.QtHttpServer', 'PySide6.QtLocation', 'PySide6.QtNfc', 'PySide6.QtRemoteObjects', 'PySide6.QtScxml', 'PySide6.QtCharts', 'PySide6.QtDataVisualization', 'PySide6.QtGraphs', 'PySide6.QtGraphsWidgets', 'PySide6.QtQuick3D', 'PySide6.QtSpatialAudio', 'PySide6.QtNetworkAuth'],
     noarchive=False,
     optimize=0,
 )

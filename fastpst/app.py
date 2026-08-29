@@ -14,11 +14,11 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, scrolledtext
 from typing import Optional, List, Dict, Any
 
-from fastpst.utils import get_app_directory, get_database_path, cleanup_temp_files
+from fastpst.utils import get_app_directory, get_database_path
 from fastpst.scanner import scan_directory_for_psts
 from fastpst.parser import PSTParser, PYPFF_AVAILABLE, get_mail_parser, is_outlook_com_available
 from fastpst.db import DatabaseManager
-from fastpst.exporter import EmailExporter
+from fastpst.exporter import EmailExporter, cleanup_temp_files
 from fastpst.launcher import MailLauncher
 from fastpst.license import verify_license_token, save_license, load_saved_license
 
