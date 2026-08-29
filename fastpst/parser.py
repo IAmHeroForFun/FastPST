@@ -431,10 +431,166 @@ class EMLParser:
             yield msg_data
 
 
+def is_outlook_com_available() -> bool:
+    """Checks if Windows Outlook COM automation is available without external C libraries."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import win32com.client
+        app = win32com.client.Dispatch("Outlook.Application")
+        return app is not None
+    except Exception:
+        return False
+
+
+class WindowsMAPIParser:
+    """
+    Zero-compiler, zero-dependency PST/OST parser for Windows using Outlook MAPI COM.
+    Dynamically loads and iterates PST stores directly through Microsoft Outlook.
+    """
+
+    def __init__(self, file_path: str):
+        self.file_path = os.path.abspath(file_path)
+        self.outlook_app = None
+        self.namespace = None
+        self.root_folder = None
+
+    def open(self):
+        if sys.platform != "win32":
+            raise NotImplementedError("WindowsMAPIParser is only supported on Windows.")
+        try:
+            import win32com.client
+            self.outlook_app = win32com.client.Dispatch("Outlook.Application")
+            self.namespace = self.outlook_app.GetNamespace("MAPI")
+            # Mount the PST store
+            self.namespace.AddStore(self.file_path)
+            # Find mounted store folder
+            for folder in self.namespace.Folders:
+                try:
+                    if folder.FilePath and os.path.abspath(folder.FilePath) == self.file_path:
+                        self.root_folder = folder
+                        break
+                except Exception:
+                    pass
+            if not self.root_folder:
+                # Fallback to matching by file name
+                base_name = os.path.splitext(os.path.basename(self.file_path))[0].lower()
+                for folder in self.namespace.Folders:
+                    if base_name in folder.Name.lower():
+                        self.root_folder = folder
+                        break
+            return self
+        except Exception as e:
+            logger.error(f"Failed to open PST via Windows MAPI: {e}")
+            raise
+
+    def close(self):
+        if self.namespace and self.root_folder:
+            try:
+                self.namespace.RemoveStore(self.root_folder)
+            except Exception as e:
+                logger.debug(f"Error unmounting PST store: {e}")
+            finally:
+                self.root_folder = None
+                self.namespace = None
+                self.outlook_app = None
+
+    def __enter__(self):
+        self.open()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def parse_all_messages(self, progress_callback=None) -> Generator[Dict[str, Any], None, None]:
+        if not self.root_folder:
+            self.open()
+        if not self.root_folder:
+            return
+        yield from self._traverse_folder(self.root_folder, "", progress_callback)
+
+    def _traverse_folder(self, folder, current_path: str, progress_callback=None) -> Generator[Dict[str, Any], None, None]:
+        try:
+            folder_name = folder.Name
+        except Exception:
+            folder_name = "Folder"
+        folder_path = f"{current_path}/{folder_name}" if current_path else folder_name
+
+        try:
+            items = folder.Items
+            for idx, item in enumerate(items):
+                try:
+                    # Filter for MailItem (Class 43) or general message
+                    msg_class = getattr(item, "MessageClass", "")
+                    if "IPM.Note" in msg_class or getattr(item, "Class", 0) == 43:
+                        subject = str(getattr(item, "Subject", "") or "(No Subject)")
+                        sender_name = str(getattr(item, "SenderName", "") or "")
+                        sender_email = str(getattr(item, "SenderEmailAddress", "") or "")
+                        sender = f"{sender_name} <{sender_email}>".strip() if sender_name and sender_email else (sender_name or sender_email or "Unknown")
+                        recipients = str(getattr(item, "To", "") or "")
+                        
+                        try:
+                            sent_on = item.SentOn
+                            date_sent = sent_on.strftime("%Y-%m-%d %H:%M:%S") if hasattr(sent_on, "strftime") else str(sent_on)
+                        except Exception:
+                            date_sent = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                        plain_body = str(getattr(item, "Body", "") or "")
+                        html_body = str(getattr(item, "HTMLBody", "") or "")
+
+                        attachments = []
+                        has_attachments = 0
+                        try:
+                            att_col = item.Attachments
+                            if att_col and att_col.Count > 0:
+                                has_attachments = 1
+                                for a_idx in range(1, att_col.Count + 1):
+                                    att = att_col.Item(a_idx)
+                                    attachments.append({
+                                        "index": a_idx - 1,
+                                        "name": str(getattr(att, "FileName", f"att_{a_idx}")),
+                                        "size": int(getattr(att, "Size", 0))
+                                    })
+                        except Exception:
+                            pass
+
+                        snippet = (plain_body[:200] if plain_body else "").strip().replace("\r\n", " ").replace("\n", " ")
+
+                        msg_data = {
+                            "file_path": self.file_path,
+                            "file_name": os.path.basename(self.file_path),
+                            "folder_path": folder_path,
+                            "message_index": idx,
+                            "subject": subject,
+                            "sender": sender,
+                            "sender_name": sender_name,
+                            "sender_email": sender_email,
+                            "recipients": recipients,
+                            "date_sent": date_sent,
+                            "plain_body": plain_body,
+                            "html_body": html_body,
+                            "headers": "",
+                            "has_attachments": has_attachments,
+                            "attachments": attachments,
+                            "body_snippet": snippet
+                        }
+                        if progress_callback:
+                            progress_callback(msg_data)
+                        yield msg_data
+                except Exception as e:
+                    logger.debug(f"Error reading item {idx} in {folder_path}: {e}")
+
+            # Recurse into child folders
+            for subfolder in folder.Folders:
+                yield from self._traverse_folder(subfolder, folder_path, progress_callback)
+        except Exception as e:
+            logger.error(f"Error accessing MAPI folder {folder_path}: {e}")
+
+
 def get_mail_parser(file_path: str):
     """
     Factory function: returns the appropriate parser for a given file.
-    - *.pst, *.ost -> PSTParser (via pypff)
+    - *.pst, *.ost -> PSTParser (via pypff C engine) or WindowsMAPIParser (Windows Outlook COM)
     - *.mbox, *.mbx, Thunderbird folders -> MboxParser
     - *.eml -> EMLParser
     """
@@ -443,7 +599,13 @@ def get_mail_parser(file_path: str):
     ext_lower = ext.lower()
 
     if ext_lower in {".pst", ".ost"}:
-        return PSTParser(file_path)
+        if PYPFF_AVAILABLE:
+            return PSTParser(file_path)
+        elif is_outlook_com_available():
+            logger.info("pypff unavailable; using Windows native Outlook MAPI parser.")
+            return WindowsMAPIParser(file_path)
+        else:
+            return PSTParser(file_path)
     elif ext_lower in {".mbox", ".mbx"}:
         return MboxParser(file_path)
     elif ext_lower == ".eml":
@@ -457,3 +619,4 @@ def get_mail_parser(file_path: str):
         except Exception:
             pass
         return MboxParser(file_path)
+

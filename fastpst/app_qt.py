@@ -23,7 +23,7 @@ from PySide6.QtGui import QFont, QIcon, QPainter, QColor, QFontMetrics, QPen
 
 from fastpst.utils import get_app_directory, get_database_path
 from fastpst.scanner import scan_directory_for_psts
-from fastpst.parser import PSTParser, PYPFF_AVAILABLE, get_mail_parser
+from fastpst.parser import PSTParser, PYPFF_AVAILABLE, get_mail_parser, is_outlook_com_available
 from fastpst.db import DatabaseManager
 from fastpst.exporter import EmailExporter, cleanup_temp_files
 from fastpst.launcher import MailLauncher
@@ -998,9 +998,10 @@ class FastPSTQtApp(QMainWindow):
                     continue
 
                 _, ext = os.path.splitext(filename)
-                if ext.lower() in {".pst", ".ost"} and not PYPFF_AVAILABLE:
+                if ext.lower() in {".pst", ".ost"} and not PYPFF_AVAILABLE and not is_outlook_com_available():
                     self.signals.error_dialog.emit(
-                        f"pypff / libpff is required to parse {filename}.\nRun 'pip install libpff-python'."
+                        f"A PST parser engine is required for {filename}.\n"
+                        "Please run FastPST compiled with libpff-python or ensure Microsoft Outlook is installed."
                     )
                     continue
 
