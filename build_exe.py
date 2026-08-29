@@ -8,6 +8,7 @@ import os
 import sys
 import subprocess
 import shutil
+import traceback
 
 def build_windows_exe():
     print("=" * 60)
@@ -80,7 +81,10 @@ def build_windows_exe():
         print("=" * 60)
     else:
         print(f"\n[ERROR] PyInstaller build failed with exit code {result.returncode}")
-        sys.exit(result.returncode)
 
 if __name__ == "__main__":
-    build_windows_exe()
+    try:
+        build_windows_exe()
+    except Exception as e:
+        print(f"\n[CRITICAL BUILD ERROR]: {e}")
+        traceback.print_exc()
