@@ -997,13 +997,6 @@ class FastPSTQtApp(QMainWindow):
                     self.signals.progress_updated.emit(f_idx, total_files, filename, size_mb, 0, pct)
                     continue
 
-                _, ext = os.path.splitext(filename)
-                if ext.lower() in {".pst", ".ost"} and not PYPFF_AVAILABLE and not is_outlook_com_available():
-                    self.signals.error_dialog.emit(
-                        f"A PST parser engine is required for {filename}.\n"
-                        "Please run FastPST compiled with libpff-python or ensure Microsoft Outlook is installed."
-                    )
-                    continue
 
                 self.signals.status_updated.emit(f"Indexing ({f_idx}/{total_files}): {filename}...")
                 self.signals.progress_updated.emit(f_idx, total_files, filename, size_mb, 0, base_pct)

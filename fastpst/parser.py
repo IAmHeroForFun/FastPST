@@ -17,6 +17,8 @@ from typing import Generator, Dict, Any, List, Optional
 
 logger = logging.getLogger("fastpst.parser")
 
+from fastpst.pure_pst import PurePSTParser
+
 try:
     import pypff
     PYPFF_AVAILABLE = True
@@ -27,7 +29,7 @@ except ImportError:
     except ImportError:
         PYPFF_AVAILABLE = False
         pypff = None
-        logger.warning("pypff/libpff is not installed. Native PST/OST parsing requires 'pip install libpff-python'.")
+        logger.info("pypff/libpff C-extension not installed. Pure-Python PST/OST parser is active.")
 
 
 def decode_str_header(header_val: Any) -> str:
@@ -460,25 +462,27 @@ class WindowsMAPIParser:
             raise NotImplementedError("WindowsMAPIParser is only supported on Windows.")
         try:
             import win32com.client
+            try:
+                import pythoncom
+                pythoncom.CoInitialize()
+            except Exception:
+                pass
             self.outlook_app = win32com.client.Dispatch("Outlook.Application")
             self.namespace = self.outlook_app.GetNamespace("MAPI")
             # Mount the PST store
             self.namespace.AddStore(self.file_path)
-            # Find mounted store folder
+            base_name = os.path.splitext(os.path.basename(self.file_path))[0].lower()
             for folder in self.namespace.Folders:
                 try:
-                    if folder.FilePath and os.path.abspath(folder.FilePath) == self.file_path:
+                    if hasattr(folder, "Store") and hasattr(folder.Store, "FilePath"):
+                        if folder.Store.FilePath and os.path.abspath(folder.Store.FilePath) == self.file_path:
+                            self.root_folder = folder
+                            break
+                    if base_name in folder.Name.lower():
                         self.root_folder = folder
                         break
                 except Exception:
                     pass
-            if not self.root_folder:
-                # Fallback to matching by file name
-                base_name = os.path.splitext(os.path.basename(self.file_path))[0].lower()
-                for folder in self.namespace.Folders:
-                    if base_name in folder.Name.lower():
-                        self.root_folder = folder
-                        break
             return self
         except Exception as e:
             logger.error(f"Failed to open PST via Windows MAPI: {e}")
@@ -494,6 +498,11 @@ class WindowsMAPIParser:
                 self.root_folder = None
                 self.namespace = None
                 self.outlook_app = None
+                try:
+                    import pythoncom
+                    pythoncom.CoUninitialize()
+                except Exception:
+                    pass
 
     def __enter__(self):
         self.open()
@@ -590,7 +599,7 @@ class WindowsMAPIParser:
 def get_mail_parser(file_path: str):
     """
     Factory function: returns the appropriate parser for a given file.
-    - *.pst, *.ost -> PSTParser (via pypff C engine) or WindowsMAPIParser (Windows Outlook COM)
+    - *.pst, *.ost -> PSTParser (via pypff C engine) -> WindowsMAPIParser -> PurePSTParser
     - *.mbox, *.mbx, Thunderbird folders -> MboxParser
     - *.eml -> EMLParser
     """
@@ -600,12 +609,18 @@ def get_mail_parser(file_path: str):
 
     if ext_lower in {".pst", ".ost"}:
         if PYPFF_AVAILABLE:
-            return PSTParser(file_path)
-        elif is_outlook_com_available():
-            logger.info("pypff unavailable; using Windows native Outlook MAPI parser.")
-            return WindowsMAPIParser(file_path)
-        else:
-            return PSTParser(file_path)
+            try:
+                return PSTParser(file_path)
+            except Exception:
+                pass
+        if is_outlook_com_available():
+            try:
+                logger.info("Using Windows native Outlook MAPI parser.")
+                return WindowsMAPIParser(file_path)
+            except Exception:
+                pass
+        logger.info(f"Using Pure-Python PST/OST engine for {file_path}")
+        return PurePSTParser(file_path)
     elif ext_lower in {".mbox", ".mbx"}:
         return MboxParser(file_path)
     elif ext_lower == ".eml":

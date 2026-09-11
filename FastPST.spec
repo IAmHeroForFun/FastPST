@@ -9,7 +9,7 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['/mnt/data/projects/FastPST/main.py'],
+    ['/run/media/hero/DATA2/projects/FastPST/main.py'],
     pathex=[],
     binaries=binaries,
     datas=datas,

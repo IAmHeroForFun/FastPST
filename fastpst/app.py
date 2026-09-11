@@ -656,14 +656,6 @@ class FastPSTApp:
                     self.task_queue.put(("progress", (pct, f"File ({f_idx}/{total_files}): {filename} (Already indexed)")))
                     continue
 
-                _, ext = os.path.splitext(filename)
-                if ext.lower() in {".pst", ".ost"} and not PYPFF_AVAILABLE and not is_outlook_com_available():
-                    self.task_queue.put((
-                        "error_dialog",
-                        f"A PST parser engine is required for {filename}.\n"
-                        "Please run FastPST compiled with libpff-python or ensure Microsoft Outlook is installed."
-                    ))
-                    continue
 
                 size_str = f"{size_mb:.1f} MB" if size_mb < 1024 else f"{(size_mb/1024):.2f} GB"
                 self.task_queue.put(("progress", (base_pct, f"Indexing ({f_idx}/{total_files}): {filename} ({size_str})...")))
