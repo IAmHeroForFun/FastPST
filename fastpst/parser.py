@@ -7,6 +7,7 @@ Supports:
 """
 
 import os
+import sys
 import datetime
 import logging
 import mailbox
