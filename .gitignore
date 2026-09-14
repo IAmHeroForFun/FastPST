@@ -35,3 +35,19 @@ FastPST_Temp/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Email Data Files & Test Mailboxes (User Privacy)
+*.pst
+*.PST
+*.ost
+*.OST
+*.mbox
+*.MBOX
+*.mbx
+*.MBX
+*.eml
+*.EML
+Domain & Dns
+Domain_and_Dns.pst
+godaddy.pst
+godaddy

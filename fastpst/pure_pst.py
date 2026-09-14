@@ -46,24 +46,10 @@ NID_TYPE_NORMAL_FOLDER = 0x02
 NID_TYPE_SEARCH_FOLDER = 0x03
 NID_TYPE_NORMAL_MESSAGE = 0x04
 NID_TYPE_ATTACHMENT = 0x05
-NID_TYPE_SEARCH_UPDATE_QUEUE = 0x06
-NID_TYPE_SEARCH_CRITERIA_OBJECT = 0x07
 NID_TYPE_ASSOC_MESSAGE = 0x08
-NID_TYPE_CONTENTS_TABLE_INDEX = 0x0A
-NID_TYPE_RECEIVE_FOLDER_TABLE = 0x0B
-NID_TYPE_OUTGOING_QUEUE_TABLE = 0x0C
-NID_TYPE_HIERARCHY_TABLE = 0x0D
 NID_TYPE_CONTENTS_TABLE = 0x0E
-NID_TYPE_ASSOC_CONTENTS_TABLE = 0x0F
-NID_TYPE_SEARCH_CONTENTS_TABLE = 0x10
-NID_TYPE_ATTACHMENT_TABLE = 0x11
-NID_TYPE_RECIPIENT_TABLE = 0x12
-NID_TYPE_SEARCH_TABLE_INDEX = 0x13
-NID_TYPE_LTP = 0x1F
 
 # Common MAPI Property Tags
-PR_MESSAGE_CLASS_W = 0x001A001F
-PR_MESSAGE_CLASS_A = 0x001A001E
 PR_SUBJECT_W = 0x0037001F
 PR_SUBJECT_A = 0x0037001E
 PR_SENDER_NAME_W = 0x0C1A001F
@@ -72,31 +58,15 @@ PR_SENDER_EMAIL_W = 0x0C1F001F
 PR_SENDER_EMAIL_A = 0x0C1F001E
 PR_DISPLAY_TO_W = 0x0E04001F
 PR_DISPLAY_TO_A = 0x0E04001E
-PR_DISPLAY_CC_W = 0x0E03001F
-PR_DISPLAY_CC_A = 0x0E03001E
-PR_DISPLAY_BCC_W = 0x0E02001F
-PR_DISPLAY_BCC_A = 0x0E02001E
 PR_CLIENT_SUBMIT_TIME = 0x00390040
 PR_MESSAGE_DELIVERY_TIME = 0x0E060040
 PR_CREATION_TIME = 0x30070040
-PR_LAST_MODIFICATION_TIME = 0x30080040
 PR_BODY_W = 0x1000001F
 PR_BODY_A = 0x1000001E
 PR_HTML_W = 0x1013001F
-PR_HTML_BIN = 0x10130102
-PR_RTF_COMPRESSED = 0x10090102
 PR_HASATTACH = 0x0E1B000B
-PR_MESSAGE_SIZE = 0x0E080003
-PR_ATTACH_FILENAME_W = 0x3704001F
-PR_ATTACH_FILENAME_A = 0x3704001E
-PR_ATTACH_LONG_FILENAME_W = 0x3707001F
-PR_ATTACH_LONG_FILENAME_A = 0x3707001E
-PR_ATTACH_DATA_BIN = 0x37010102
-PR_ATTACH_SIZE = 0x0E200003
 PR_DISPLAY_NAME_W = 0x3001001F
 PR_DISPLAY_NAME_A = 0x3001001E
-PR_SUBFOLDERS = 0x360A000B
-PR_CONTENT_COUNT = 0x36020003
 
 
 def decode_filetime(ft_int: int) -> Optional[datetime.datetime]:
@@ -104,7 +74,6 @@ def decode_filetime(ft_int: int) -> Optional[datetime.datetime]:
     if ft_int <= 0:
         return None
     try:
-        # 100-nanosecond intervals since Jan 1, 1601 UTC
         epoch_diff = 116444736000000000
         if ft_int < epoch_diff:
             return None
@@ -124,7 +93,7 @@ class PurePSTParser:
         self.file_path = os.path.abspath(file_path)
         self.file_handle = None
         self.is_unicode = True
-        self.crypt_method = 0
+        self.crypt_method = 1
         self.bbt_map: Dict[int, Tuple[int, int]] = {}  # bid -> (ib, cb)
         self.nbt_map: Dict[int, Tuple[int, int, int]] = {}  # nid -> (bidData, bidSub, nidParent)
         self.folder_names: Dict[int, str] = {}
@@ -162,14 +131,12 @@ class PurePSTParser:
 
         magic = hdr[:4]
         if magic != b"!BDN":
-            # Some OST files or encrypted containers use alternative magic
-            logger.warning(f"File magic is {magic}, attempting PST/OST structure scan.")
+            logger.debug(f"File magic is {magic}, attempting PST/OST structure scan.")
 
-        wVer, wVerClient = struct.unpack_from("<HH", hdr, 10)
-        # 14/15 = ANSI 32-bit; 23 (0x17) / 36 (0x24) = Unicode 64-bit
+        wVer, _ = struct.unpack_from("<HH", hdr, 10)
         self.is_unicode = (wVer >= 23)
 
-        # CryptMethod at offset 461 (0x1CD) or offset 513
+        # CryptMethod
         self.crypt_method = 1
         if len(hdr) > 461 and hdr[461] in (0, 1, 2):
             self.crypt_method = hdr[461]
@@ -181,28 +148,16 @@ class PurePSTParser:
         except Exception:
             pass
 
-        # Read Root B-Tree pointers
+        # Root B-Tree pointers (BREF NBT and BREF BBT)
         if self.is_unicode:
-            # Root structure at offset 180 (0xB4)
-            # Unicode Root: cb (8), ibFileEof (8), ibAMapLast (8), cbAMapFree (8), cbPMapFree (8),
-            # BREFBREFNBT (16: bid 8, ib 8), BREFBREFBBT (16: bid 8, ib 8)
-            root_data = hdr[180:180 + 72]
-            if len(root_data) >= 72:
-                self.root_nbt_bid, self.root_nbt_ib = struct.unpack_from("<QQ", root_data, 40)
-                self.root_bbt_bid, self.root_bbt_ib = struct.unpack_from("<QQ", root_data, 56)
-            else:
-                self.root_nbt_ib, self.root_bbt_ib = 0, 0
+            self.root_nbt_bid, self.root_nbt_ib = struct.unpack_from("<QQ", hdr, 0xD8)
+            self.root_bbt_bid, self.root_bbt_ib = struct.unpack_from("<QQ", hdr, 0xE8)
         else:
-            # ANSI Root at offset 180 (0xB4)
-            root_data = hdr[180:180 + 40]
-            if len(root_data) >= 40:
-                self.root_nbt_bid, self.root_nbt_ib = struct.unpack_from("<II", root_data, 20)
-                self.root_bbt_bid, self.root_bbt_ib = struct.unpack_from("<II", root_data, 28)
-            else:
-                self.root_nbt_ib, self.root_bbt_ib = 0, 0
+            self.root_nbt_bid, self.root_nbt_ib = struct.unpack_from("<II", hdr, 0xBC)
+            self.root_bbt_bid, self.root_bbt_ib = struct.unpack_from("<II", hdr, 0xC4)
 
     def _decrypt_block(self, data: bytes) -> bytes:
-        if self.crypt_method == 1:  # Permutation / Compressible
+        if self.crypt_method == 1:
             return bytes(MPBB_CRYPT[b] for b in data)
         return data
 
@@ -211,6 +166,11 @@ class PurePSTParser:
             return b""
         self.file_handle.seek(ib)
         raw = self.file_handle.read(cb)
+        # In Unicode PST, data block trailer is 16 bytes (or 12 bytes in ANSI)
+        trailer_len = 16 if self.is_unicode else 12
+        if len(raw) > trailer_len:
+            data_part = raw[:-trailer_len]
+            return self._decrypt_block(data_part)
         return self._decrypt_block(raw)
 
     def _load_bbt(self):
@@ -227,36 +187,30 @@ class PurePSTParser:
         if len(page) < 512:
             return
 
-        cEnt = page[496]
-        cEntMax = page[497]
-        cbEnt = page[498]
-        cLevel = page[499]
-        ptype = page[504]  # 0x80 = BBT
+        trailer_offset = 488 if self.is_unicode else 496
+        cEnt, cEntMax, cbEnt, cLevel = struct.unpack_from("<BBBB", page, trailer_offset)
 
-        if ptype != 0x80 and ptype != 0:
-            return
-
-        if cLevel == 0:  # Leaf page: contains BBT entries
+        if cLevel == 0:  # Leaf page
             for i in range(cEnt):
                 offset = i * cbEnt
                 if self.is_unicode:
-                    if offset + 24 <= 496:
-                        bid, ib, cb, cRef = struct.unpack_from("<QQHH", page, offset)
+                    if offset + 24 <= trailer_offset:
+                        bid, ib, cb, _ = struct.unpack_from("<QQHH", page, offset)
                         self.bbt_map[bid] = (ib, cb)
                 else:
-                    if offset + 12 <= 496:
-                        bid, ib, cb, cRef = struct.unpack_from("<IIHH", page, offset)
+                    if offset + 12 <= trailer_offset:
+                        bid, ib, cb, _ = struct.unpack_from("<IIHH", page, offset)
                         self.bbt_map[bid] = (ib, cb)
-        else:  # Intermediate page: branch down
+        else:  # Branch page
             for i in range(cEnt):
                 offset = i * cbEnt
                 if self.is_unicode:
-                    if offset + 24 <= 496:
-                        bid_key, child_bid, child_ib = struct.unpack_from("<QQQ", page, offset)
+                    if offset + 24 <= trailer_offset:
+                        _, _, child_ib = struct.unpack_from("<QQQ", page, offset)
                         self._traverse_bbt_page(child_ib)
                 else:
-                    if offset + 12 <= 496:
-                        bid_key, child_bid, child_ib = struct.unpack_from("<III", page, offset)
+                    if offset + 12 <= trailer_offset:
+                        _, _, child_ib = struct.unpack_from("<III", page, offset)
                         self._traverse_bbt_page(child_ib)
 
     def _load_nbt(self):
@@ -273,35 +227,30 @@ class PurePSTParser:
         if len(page) < 512:
             return
 
-        cEnt = page[496]
-        cbEnt = page[498]
-        cLevel = page[499]
-        ptype = page[504]  # 0x81 = NBT
+        trailer_offset = 488 if self.is_unicode else 496
+        cEnt, cEntMax, cbEnt, cLevel = struct.unpack_from("<BBBB", page, trailer_offset)
 
-        if ptype != 0x81 and ptype != 0:
-            return
-
-        if cLevel == 0:  # Leaf page: contains NBT entries
+        if cLevel == 0:  # Leaf page
             for i in range(cEnt):
                 offset = i * cbEnt
                 if self.is_unicode:
-                    if offset + 32 <= 496:
+                    if offset + 32 <= trailer_offset:
                         nid, bidData, bidSub, nidParent = struct.unpack_from("<QQQI", page, offset)
                         self.nbt_map[nid] = (bidData, bidSub, nidParent)
                 else:
-                    if offset + 16 <= 496:
+                    if offset + 16 <= trailer_offset:
                         nid, bidData, bidSub, nidParent = struct.unpack_from("<IIII", page, offset)
                         self.nbt_map[nid] = (bidData, bidSub, nidParent)
-        else:  # Intermediate page: branch down
+        else:  # Branch page
             for i in range(cEnt):
                 offset = i * cbEnt
                 if self.is_unicode:
-                    if offset + 24 <= 496:
-                        nid_key, child_bid, child_ib = struct.unpack_from("<QQQ", page, offset)
+                    if offset + 24 <= trailer_offset:
+                        _, _, child_ib = struct.unpack_from("<QQQ", page, offset)
                         self._traverse_nbt_page(child_ib)
                 else:
-                    if offset + 12 <= 496:
-                        nid_key, child_bid, child_ib = struct.unpack_from("<III", page, offset)
+                    if offset + 12 <= trailer_offset:
+                        _, _, child_ib = struct.unpack_from("<III", page, offset)
                         self._traverse_nbt_page(child_ib)
 
     def _read_data_by_bid(self, bid: int) -> bytes:
@@ -314,7 +263,7 @@ class PurePSTParser:
         """Discovers folder names and parent/child tree relationships from NBT nodes."""
         for nid, (bidData, bidSub, nidParent) in self.nbt_map.items():
             nid_type = nid & 0x1F
-            if nid_type == NID_TYPE_NORMAL_FOLDER or nid == 0x122:  # Root or subfolder
+            if nid_type == NID_TYPE_NORMAL_FOLDER or nid == 0x122:
                 folder_name = self._extract_display_name(bidData) or f"Folder_{nid & 0xFFFF}"
                 self.folder_names[nid] = folder_name
                 if nidParent not in self.folder_tree:
@@ -336,20 +285,14 @@ class PurePSTParser:
         if len(data) < 8:
             return props
 
-        # Check Heap-on-Node signature
-        bClientSig = data[0] if len(data) > 0 else 0
-        bHType = data[1] if len(data) > 1 else 0
-
         # Scan for BTH records and property tags in data block
-        # Format: 2-byte tag, 2-byte type, 4-byte value/offset
         pos = 0
         limit = min(len(data), 8192)
         while pos + 8 <= limit:
             prop_tag, prop_type, val_data = struct.unpack_from("<HHI", data, pos)
             full_tag = (prop_tag << 16) | prop_type
 
-            # Check if this looks like a recognized MAPI tag
-            if prop_tag in {0x0037, 0x001A, 0x0C1A, 0x0C1F, 0x0E04, 0x0E03, 0x0E02, 0x1000, 0x1013, 0x3001, 0x3704, 0x3707, 0x0E1B, 0x0E08}:
+            if prop_tag in {0x0037, 0x001A, 0x0C1A, 0x0C1F, 0x0E04, 0x1000, 0x1013, 0x3001, 0x0E1B, 0x0E08}:
                 if prop_type == 0x001F:  # Unicode string
                     str_val = self._resolve_string(data, val_data, unicode_str=True)
                     if str_val:
@@ -362,11 +305,10 @@ class PurePSTParser:
                     dt_val = decode_filetime(val_data)
                     if dt_val:
                         props[full_tag] = dt_val
-                elif prop_type in (0x0003, 0x000B):  # Integer / Boolean
+                elif prop_type in (0x0003, 0x000B):
                     props[full_tag] = val_data
             pos += 2
 
-        # Fallback raw string scanning for subject, sender, and bodies if PC table is fragmented
         if PR_SUBJECT_W not in props and PR_SUBJECT_A not in props:
             self._scan_strings_in_data(data, props)
 
@@ -394,7 +336,6 @@ class PurePSTParser:
     def _scan_strings_in_data(self, data: bytes, props: Dict[int, Any]):
         """Heuristic string extractor from message data block when BTH is non-standard."""
         try:
-            # Look for Unicode sequences (common in Outlook 2003-2021)
             text_chunks = []
             for part in data.split(b"\x00\x00\x00\x00"):
                 if len(part) >= 4:
@@ -454,11 +395,8 @@ class PurePSTParser:
 
     def _extract_message(self, nid: int, bidData: int, bidSub: int, nidParent: int, msg_index: int) -> Optional[Dict[str, Any]]:
         """Extracts complete message dictionary from message NID."""
-        props = self._parse_property_context(bidData)
-        if not props and bidData not in self.bbt_map:
-            return None
-
         folder_path = self._get_folder_path(nidParent)
+        props = self._parse_property_context(bidData)
 
         subject = props.get(PR_SUBJECT_W) or props.get(PR_SUBJECT_A) or "(No Subject)"
         sender_name = props.get(PR_SENDER_NAME_W) or props.get(PR_SENDER_NAME_A) or ""
@@ -467,7 +405,6 @@ class PurePSTParser:
 
         recipients = props.get(PR_DISPLAY_TO_W) or props.get(PR_DISPLAY_TO_A) or ""
         
-        # Date Sent
         dt = props.get(PR_CLIENT_SUBMIT_TIME) or props.get(PR_MESSAGE_DELIVERY_TIME) or props.get(PR_CREATION_TIME)
         if isinstance(dt, datetime.datetime):
             date_sent = dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -481,11 +418,9 @@ class PurePSTParser:
         if isinstance(html_body, bytes):
             html_body = html_body.decode("utf-8", errors="replace")
 
-        # Attachments
         has_attachments = 1 if props.get(PR_HASATTACH) else 0
         attachments = []
         if bidSub:
-            # Parse sub-node attachment descriptors if present
             sub_data = self._read_data_by_bid(bidSub)
             if len(sub_data) > 0:
                 has_attachments = 1

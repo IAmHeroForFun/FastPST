@@ -69,16 +69,12 @@ def scan_directory_for_psts(root_dir: str, recursive: bool = True) -> List[Dict[
                     except (OSError, PermissionError) as e:
                         logger.error(f"Cannot access file {full_path}: {e}")
     else:
-        # Using glob for single-level lookup
-        patterns = [os.path.join(root_dir, f"*{ext}") for ext in [".pst", ".PST", ".ost", ".OST", ".mbox", ".MBOX", ".mbx", ".MBX", ".eml", ".EML"]]
-        seen_paths = set()
-        for pattern in patterns:
-            for full_path in glob.glob(pattern):
-                if full_path not in seen_paths and os.path.isfile(full_path):
-                    seen_paths.add(full_path)
+        try:
+            for filename in os.listdir(root_dir):
+                full_path = os.path.join(root_dir, filename)
+                if os.path.isfile(full_path) and is_supported_mail_file(filename, full_path):
                     try:
                         stat = os.stat(full_path)
-                        filename = os.path.basename(full_path)
                         found_files.append({
                             "path": full_path,
                             "filename": filename,
@@ -88,6 +84,8 @@ def scan_directory_for_psts(root_dir: str, recursive: bool = True) -> List[Dict[
                         })
                     except (OSError, PermissionError) as e:
                         logger.error(f"Cannot access file {full_path}: {e}")
+        except Exception as e:
+            logger.error(f"Error listing directory {root_dir}: {e}")
 
     logger.info(f"Discovered {len(found_files)} mail container file(s) in {root_dir}")
     return found_files
